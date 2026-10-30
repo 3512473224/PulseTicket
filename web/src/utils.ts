@@ -14,6 +14,19 @@ export function parseList(raw?: string): string[] {
   }
 }
 
+export function groupSeatsByZone(raw?: string): { zone: string; seats: string[] }[] {
+  const list = parseList(raw)
+  const map = new Map<string, string[]>()
+  for (const item of list) {
+    const parts = item.trim().split(/\s+/)
+    const zone = parts.length > 1 ? parts.slice(0, -1).join(' ') : ''
+    const seat = parts[parts.length - 1]
+    if (!map.has(zone)) map.set(zone, [])
+    map.get(zone)!.push(seat)
+  }
+  return [...map.entries()].map(([zone, seats]) => ({ zone, seats }))
+}
+
 function toDate(value?: string): Date | null {
   if (!value) return null
   const d = new Date(value.replace(' ', 'T'))
