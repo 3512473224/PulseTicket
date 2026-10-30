@@ -1,0 +1,47 @@
+services:
+  pulseticket-redis:
+    image: redis:latest
+    container_name: pulseticket-redis
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  pulseticket-rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: pulseticket-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    restart: unless-stopped
+
+  pulseticket-nacos:
+    image: nacos/nacos-server:v2.1.0-slim
+    container_name: pulseticket-nacos
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      JVM_XMS: 256m
+      JVM_XMX: 256m
+      JVM_XMN: 128m
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    restart: unless-stopped
+
+  pulseticket-seata:
+    image: seataio/seata-server:2.0.0
+    container_name: pulseticket-seata
+    environment:
+      SEATA_IP: 127.0.0.1
+      SEATA_PORT: 8091
+      STORE_MODE: file
+      JVM_XMS: 256m
+      JVM_XMX: 256m
+    ports:
+      - "7091:7091"
+      - "8091:8091"
+    restart: unless-stopped

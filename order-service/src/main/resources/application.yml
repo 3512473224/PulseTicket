@@ -1,0 +1,56 @@
+server:
+  port: 8203
+
+spring:
+  application:
+    name: order-service
+  config:
+    import:
+      - optional:nacos:shared-jdbc.yaml
+      - optional:nacos:shared-redis.yaml
+      - optional:nacos:shared-mq.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        file-extension: yaml
+    openfeign:
+      okhttp:
+        enabled: true
+      circuitbreaker:
+        enabled: true
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 6000
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/ticket_order?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+
+seata:
+  enabled: true
+  application-id: order-service
+  tx-service-group: default_tx_group
+  enable-auto-data-source-proxy: true
+  data-source-proxy-mode: AT
+  service:
+    vgroup-mapping:
+      default_tx_group: default
+    grouplist:
+      default: ${SEATA_SERVER_ADDR:127.0.0.1:8091}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

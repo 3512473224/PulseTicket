@@ -1,0 +1,51 @@
+server:
+  port: 8200
+
+spring:
+  application:
+    name: ticket-gateway
+  config:
+    import:
+      - optional:nacos:shared-jwt.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        file-extension: yaml
+    gateway:
+      globalcors:
+        add-to-simple-url-handler-mapping: true
+        corsConfigurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders: "*"
+            allowCredentials: true
+            maxAge: 3600
+      routes:
+        - id: user-service-route
+          uri: lb://user-service
+          predicates:
+            - Path=/api/user/**
+        - id: show-service-route
+          uri: lb://show-service
+          predicates:
+            - Path=/api/show/**
+        - id: order-service-route
+          uri: lb://order-service
+          predicates:
+            - Path=/api/order/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway

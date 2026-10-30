@@ -1,0 +1,28 @@
+# Secrets & Local Env
+.env
+.env.local
+.env.*.local
+web/.env
+web/.env.local
+
+# Maven & Java
+**/target/
+*.jar
+*.war
+*.class
+hs_err_pid*
+logs/
+*.log
+seata/
+
+# Node & Vue
+web/node_modules/
+web/dist/
+*.tsbuildinfo
+
+# IDE & OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db

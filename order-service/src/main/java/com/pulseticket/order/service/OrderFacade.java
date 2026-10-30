@@ -1,0 +1,384 @@
+package com.pulseticket.order.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pulseticket.common.exception.BizException;
+import com.pulseticket.feign.client.ShowSeatClient;
+import com.pulseticket.feign.dto.OrderClosedEventDTO;
+import com.pulseticket.feign.dto.OrderPaidEventDTO;
+import com.pulseticket.order.entity.MqEventLog;
+import com.pulseticket.order.entity.SeataTxAudit;
+import com.pulseticket.order.entity.TicketOrder;
+import com.pulseticket.order.mapper.MqEventLogMapper;
+import com.pulseticket.order.mapper.SeataTxAuditMapper;
+import com.pulseticket.order.mapper.TicketOrderMapper;
+import com.pulseticket.order.mq.OrderMqConfigAndListener;
+import org.redisson.RedissonMultiLock;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * 选座下单门面协调器 (无 @Transactional 注解！)
+ * 面试王牌考点 —— 为什么必须把 Redisson 加解锁写在事务方法外面？
+ * 如果在 @Transactional 方法内部 unlock()，锁释放瞬间 Spring 事务尚未 COMMIT 提交，
+ * 其他并发线程抢到锁读到的仍是未提交前的旧数据，会导致“一人多单”或“超卖”！
+ * 因此本类严格遵循：
+ *   ① 获取 Redisson 用户防重锁 (WatchDog 30s 自动续期)
+ *   ② 对 seatIds 升序排列后获取 RedissonMultiLock 联锁 (防止交叉选座死锁)
+ *   ③ 调用 OrderTxService (@GlobalTransactional) 执行跨库锁座与创单并完成提交
+ *   ④ 发送 RabbitMQ 延迟关单消息
+ *   ⑤ 在 finally 中安全释放分布式锁
+ */
+@Service
+public class OrderFacade {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderFacade.class);
+    private static final DateTimeFormatter NO_FMT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+    private final RedissonClient redissonClient;
+    private final OrderTxService orderTxService;
+    private final TicketOrderMapper ticketOrderMapper;
+    private final SeataTxAuditMapper seataTxAuditMapper;
+    private final MqEventLogMapper mqEventLogMapper;
+    private final SeataAuditService seataAuditService;
+    private final ShowSeatClient showSeatClient;
+    private final RabbitTemplate rabbitTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    public OrderFacade(
+            RedissonClient redissonClient,
+            OrderTxService orderTxService,
+            TicketOrderMapper ticketOrderMapper,
+            SeataTxAuditMapper seataTxAuditMapper,
+            MqEventLogMapper mqEventLogMapper,
+            SeataAuditService seataAuditService,
+            ShowSeatClient showSeatClient,
+            RabbitTemplate rabbitTemplate
+    ) {
+        this.redissonClient = redissonClient;
+        this.orderTxService = orderTxService;
+        this.ticketOrderMapper = ticketOrderMapper;
+        this.seataTxAuditMapper = seataTxAuditMapper;
+        this.mqEventLogMapper = mqEventLogMapper;
+        this.seataAuditService = seataAuditService;
+        this.showSeatClient = showSeatClient;
+        this.rabbitTemplate = rabbitTemplate;
+    }
+
+    public TicketOrder createOrderWithThreeLayerDefense(
+            Long userId,
+            String username,
+            Long sessionId,
+            List<Long> rawSeatIds,
+            boolean fastCloseDemo,
+            boolean simulateSeataRollback
+    ) {
+        if (userId == null) {
+            throw new BizException(401, "请先登录后再选座购票");
+        }
+        if (sessionId == null || rawSeatIds == null || rawSeatIds.isEmpty()) {
+            throw new BizException(400, "请选择场次与至少 1 个座位");
+        }
+        if (rawSeatIds.size() > 6) {
+            throw new BizException(400, "单笔订单最多支持选座 6 张");
+        }
+
+        // 座位 ID 严格去重并升序排列（防止用户 A 选 [2,5] 与用户 B 选 [5,2] 产生环形等待死锁！）
+        List<Long> sortedSeatIds = rawSeatIds.stream().distinct().sorted().toList();
+
+        // 第一层防线：Redisson 用户级防连点重复下单锁 (不传 leaseTime 参数以启用 30s WatchDog 看门狗自动续期)
+        String userLockKey = "lock:order:submit:" + userId + ":" + sessionId;
+        RLock userLock = redissonClient.getLock(userLockKey);
+        if (!userLock.tryLock()) {
+            throw new BizException(429, "您的选座请求正在处理中，请勿高频连点重复提交！");
+        }
+
+        // 第二层防线：RedissonMultiLock 座位级分布式联锁（50人抢同一座时在 Redis 层毫秒级快速拦截）
+        RLock[] seatLocks = sortedSeatIds.stream()
+                .map(sid -> redissonClient.getLock("lock:seat:" + sessionId + ":" + sid))
+                .toArray(RLock[]::new);
+        RedissonMultiLock seatMultiLock = new RedissonMultiLock(seatLocks);
+        boolean seatLocked = false;
+
+        long t0 = System.currentTimeMillis();
+        String orderNo = "TK" + LocalDateTime.now().format(NO_FMT)
+                + String.format("%04d", ThreadLocalRandom.current().nextInt(1000, 9999));
+
+        try {
+            try {
+                // 最多等待 250ms，leaseTime 传 -1 保持看门狗续期
+                seatLocked = seatMultiLock.tryLock(250, -1, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            if (!seatLocked) {
+                throw new BizException(409, "当前座位正被其他观众锁定结算中 (Redisson MultiLock 并发拦截)，请更换座位！");
+            }
+
+            int delaySeconds = fastCloseDemo ? 15 : 900;
+
+            // 第三层防线 + Seata AT 全局事务：跨服务锁座 + 插入订单
+            TicketOrder createdOrder = orderTxService.executeCreateOrderGlobalTx(
+                    orderNo,
+                    userId,
+                    username,
+                    sessionId,
+                    sortedSeatIds,
+                    delaySeconds,
+                    simulateSeataRollback
+            );
+
+            long elapsed = System.currentTimeMillis() - t0;
+            seataAuditService.recordSeataAudit(
+                    createdOrder.getSeataXid(),
+                    orderNo,
+                    userId,
+                    sessionId,
+                    sortedSeatIds.toString(),
+                    "COMMITTED",
+                    false,
+                    "一阶段 show-service 锁定座位 " + sortedSeatIds + " + order-service 创单成功；二阶段异步清理 undo_log 完成全局提交",
+                    elapsed
+            );
+
+            // 事务已彻底提交成功后，投递 RabbitMQ 延迟关单消息 (15s 极速演示队列 或 15min 标准队列)
+            String routingKey = fastCloseDemo
+                    ? OrderMqConfigAndListener.ROUTING_DELAY_FAST
+                    : OrderMqConfigAndListener.ROUTING_DELAY_15M;
+            String msgId = "msg-delay-" + UUID.randomUUID().toString().substring(0, 8);
+            rabbitTemplate.convertAndSend(
+                    OrderMqConfigAndListener.EXCHANGE_ORDER_DELAY,
+                    routingKey,
+                    orderNo,
+                    new CorrelationData(msgId)
+            );
+
+            seataAuditService.recordMqEvent(
+                    msgId,
+                    OrderMqConfigAndListener.EXCHANGE_ORDER_DELAY,
+                    routingKey,
+                    orderNo,
+                    "DELAY_CLOSE_SENT",
+                    "已投递死信延迟关单消息，倒计时 " + delaySeconds + " 秒未付款将自动关单并释放座位",
+                    "DELIVERED"
+            );
+
+            return createdOrder;
+        } catch (Exception ex) {
+            long elapsed = System.currentTimeMillis() - t0;
+            if (simulateSeataRollback) {
+                // 兜底保障：若本地环境 Seata TC 异步回滚尚未完成，确保演示态座位立即恢复 AVAILABLE
+                try {
+                    OrderClosedEventDTO compensate = new OrderClosedEventDTO();
+                    compensate.setOrderNo(orderNo);
+                    compensate.setSessionId(sessionId);
+                    compensate.setSeatIds(sortedSeatIds);
+                    compensate.setCloseReason("SEATA_AT_ROLLBACK_COMPENSATE");
+                    showSeatClient.releaseSeats(compensate);
+                } catch (Exception ignored) {
+                }
+                seataAuditService.recordSeataAudit(
+                        "AT-ROLLBACK-" + orderNo,
+                        orderNo,
+                        userId,
+                        sessionId,
+                        sortedSeatIds.toString(),
+                        "ROLLED_BACK",
+                        true,
+                        "【Seata AT 二阶段反向补偿成功】show-service 一阶段已锁定座位 " + sortedSeatIds + " 并写 undo_log，捕获异常后利用 before image 自动回滚释放座位，订单表回滚无脏数据！",
+                        elapsed
+                );
+            }
+            Throwable cursor = ex;
+            while (cursor != null) {
+                if (cursor instanceof BizException biz) {
+                    throw biz;
+                }
+                cursor = cursor.getCause();
+            }
+            throw new BizException(500, ex.getMessage());
+        } finally {
+            // 严格在数据库事务提交/回滚之后才释放 Redisson 分布式锁！
+            if (seatLocked) {
+                try {
+                    seatMultiLock.unlock();
+                } catch (Exception ignored) {
+                }
+            }
+            if (userLock.isHeldByCurrentThread()) {
+                try {
+                    userLock.unlock();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * 模拟收银台支付订单：
+     * 1. 执行 WHERE status = 'UNPAID' 的 CAS 原子更新；
+     * 2. 向 ticket.order.paid.fanout 广播支付成功事件：
+     *    - show-service 消费将座位从 LOCKED -> SOLD
+     *    - user-service 消费为用户累加观演积分并发送出票站内信 (唯一索引保证幂等)
+     */
+    public TicketOrder payOrder(Long userId, String orderNo) {
+        TicketOrder order = ticketOrderMapper.selectOne(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .eq(TicketOrder::getOrderNo, orderNo)
+                        .eq(TicketOrder::getUserId, userId)
+        );
+        if (order == null) {
+            throw new BizException(404, "订单不存在: " + orderNo);
+        }
+        if ("PAID".equals(order.getStatus())) {
+            return order; // 幂等返回
+        }
+        if ("CLOSED".equals(order.getStatus())) {
+            throw new BizException(409, "订单已超时关闭，座位已被系统释放，请重新选座下单！");
+        }
+
+        String ticketCode = "PT-" + ThreadLocalRandom.current().nextInt(1000, 9999) + "-"
+                + orderNo.substring(Math.max(0, orderNo.length() - 4));
+
+        int updated = ticketOrderMapper.casMarkOrderPaid(orderNo, userId, ticketCode);
+        if (updated == 0) {
+            throw new BizException(409, "订单状态已变更，无法完成支付");
+        }
+
+        TicketOrder paidOrder = ticketOrderMapper.selectById(order.getId());
+        List<Long> seatIds = parseList(paidOrder.getSeatIdsJson(), new TypeReference<List<Long>>() {});
+        List<String> seatLabels = parseList(paidOrder.getSeatLabelsJson(), new TypeReference<List<String>>() {});
+
+        OrderPaidEventDTO event = new OrderPaidEventDTO();
+        String msgId = "msg-paid-" + UUID.randomUUID().toString().substring(0, 8);
+        event.setMessageId(msgId);
+        event.setOrderNo(orderNo);
+        event.setUserId(userId);
+        event.setUsername(paidOrder.getUsername());
+        event.setShowId(paidOrder.getShowId());
+        event.setShowTitle(paidOrder.getShowTitle());
+        event.setVenueName(paidOrder.getVenueName());
+        event.setSessionId(paidOrder.getSessionId());
+        event.setSessionTitle(paidOrder.getSessionTitle());
+        event.setSeatIds(seatIds);
+        event.setSeatLabels(seatLabels);
+        event.setTotalAmount(paidOrder.getTotalAmount());
+        event.setTicketCode(ticketCode);
+
+        rabbitTemplate.convertAndSend(
+                OrderMqConfigAndListener.EXCHANGE_ORDER_PAID_FANOUT,
+                "",
+                event,
+                new CorrelationData(msgId)
+        );
+
+        seataAuditService.recordMqEvent(
+                msgId,
+                OrderMqConfigAndListener.EXCHANGE_ORDER_PAID_FANOUT,
+                "fanout.*",
+                orderNo,
+                "ORDER_PAID_FANOUT",
+                "已广播支付成功事件：通知 show-service 出票 (LOCKED->SOLD) + user-service 发放积分与电子票通知",
+                "DELIVERED"
+        );
+
+        return paidOrder;
+    }
+
+    /**
+     * 用户主动取消未支付订单並立即归还座位
+     */
+    public TicketOrder cancelOrderManually(Long userId, String orderNo) {
+        TicketOrder order = ticketOrderMapper.selectOne(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .eq(TicketOrder::getOrderNo, orderNo)
+                        .eq(TicketOrder::getUserId, userId)
+        );
+        if (order == null) {
+            throw new BizException(404, "订单不存在");
+        }
+        if (!"UNPAID".equals(order.getStatus())) {
+            return order;
+        }
+
+        int closed = ticketOrderMapper.casCloseUnpaidOrder(orderNo, "USER_CANCEL");
+        if (closed == 1) {
+            List<Long> seatIds = parseList(order.getSeatIdsJson(), new TypeReference<List<Long>>() {});
+            OrderClosedEventDTO releaseEvent = new OrderClosedEventDTO();
+            releaseEvent.setMessageId("msg-cancel-" + UUID.randomUUID().toString().substring(0, 8));
+            releaseEvent.setOrderNo(orderNo);
+            releaseEvent.setUserId(userId);
+            releaseEvent.setSessionId(order.getSessionId());
+            releaseEvent.setSeatIds(seatIds);
+            releaseEvent.setCloseReason("USER_CANCEL");
+
+            rabbitTemplate.convertAndSend(
+                    OrderMqConfigAndListener.EXCHANGE_ORDER_CLOSED_DIRECT,
+                    OrderMqConfigAndListener.ROUTING_ORDER_CLOSED_RELEASE,
+                    releaseEvent
+            );
+            try {
+                showSeatClient.releaseSeats(releaseEvent);
+            } catch (Exception ignored) {
+            }
+        }
+        return ticketOrderMapper.selectById(order.getId());
+    }
+
+    public List<TicketOrder> listUserOrders(Long userId) {
+        return ticketOrderMapper.selectList(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .eq(TicketOrder::getUserId, userId)
+                        .orderByDesc(TicketOrder::getCreatedAt)
+        );
+    }
+
+    public TicketOrder getOrderByNo(Long userId, String orderNo) {
+        TicketOrder order = ticketOrderMapper.selectOne(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .eq(TicketOrder::getOrderNo, orderNo)
+                        .eq(TicketOrder::getUserId, userId)
+        );
+        if (order == null) {
+            throw new BizException(404, "订单不存在");
+        }
+        return order;
+    }
+
+    public Map<String, Object> getArchitectureTelemetry() {
+        List<SeataTxAudit> seataAudits = seataTxAuditMapper.selectList(
+                new LambdaQueryWrapper<SeataTxAudit>()
+                        .orderByDesc(SeataTxAudit::getCreatedAt)
+                        .last("LIMIT 15")
+        );
+        List<MqEventLog> mqLogs = mqEventLogMapper.selectList(
+                new LambdaQueryWrapper<MqEventLog>()
+                        .orderByDesc(MqEventLog::getCreatedAt)
+                        .last("LIMIT 15")
+        );
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("seataAudits", seataAudits);
+        data.put("mqLogs", mqLogs);
+        return data;
+    }
+
+    private <T> List<T> parseList(String json, TypeReference<List<T>> typeRef) {
+        try {
+            return objectMapper.readValue(json, typeRef);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+}
