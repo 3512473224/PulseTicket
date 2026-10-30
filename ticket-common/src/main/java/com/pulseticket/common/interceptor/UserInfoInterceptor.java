@@ -9,7 +9,7 @@ import java.util.UUID;
 
 /**
  * 下游微服务统一登录态透传拦截器
- * 在 preHandle 提取网关或上游 Feign 透传的 X-User-Id / X-Username，
+ * 在 preHandle 提取网关或上游 Feign 透传的 X-User-Id / X-Username / X-User-Role，
  * 并在 afterCompletion 中强制调用 UserContext.clear() 清理 ThreadLocal！
  */
 public class UserInfoInterceptor implements HandlerInterceptor {
@@ -26,6 +26,10 @@ public class UserInfoInterceptor implements HandlerInterceptor {
         String username = request.getHeader(UserContext.HEADER_USERNAME);
         if (username != null && !username.isBlank()) {
             UserContext.setUsername(username.trim());
+        }
+        String role = request.getHeader(UserContext.HEADER_USER_ROLE);
+        if (role != null && !role.isBlank()) {
+            UserContext.setRole(role.trim().toUpperCase());
         }
         String traceId = request.getHeader(UserContext.HEADER_TRACE_ID);
         if (traceId == null || traceId.isBlank()) {

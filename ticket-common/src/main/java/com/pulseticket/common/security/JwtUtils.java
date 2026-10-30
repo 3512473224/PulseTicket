@@ -12,7 +12,7 @@ import java.util.Map;
 public final class JwtUtils {
 
     private static final String DEFAULT_SECRET = "PulseTicketMicroserviceGatewayJwtSecretKey2026EnterpriseEdition8899";
-    private static final long EXPIRATION_MS = 24 * 60 * 60 * 1000L; // 24 hours
+    private static final long EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000L; // 7 days persistent session
 
     private JwtUtils() {}
 
@@ -22,13 +22,18 @@ public final class JwtUtils {
     }
 
     public static String generateToken(Long userId, String username, String vipLevel, String secret) {
+        return generateToken(userId, username, vipLevel, "USER", secret);
+    }
+
+    public static String generateToken(Long userId, String username, String vipLevel, String role, String secret) {
         long now = System.currentTimeMillis();
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .claims(Map.of(
                         "userId", userId,
                         "username", username,
-                        "vipLevel", vipLevel != null ? vipLevel : "GOLD"
+                        "vipLevel", vipLevel != null ? vipLevel : "NORMAL",
+                        "role", role != null ? role : "USER"
                 ))
                 .issuedAt(new Date(now))
                 .expiration(new Date(now + EXPIRATION_MS))

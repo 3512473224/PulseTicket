@@ -1,5 +1,5 @@
-import { reactive, ref } from 'vue'
-import { api, readableMessage, setToken } from './api'
+import { computed, reactive, ref } from 'vue'
+import { api, getToken, readableMessage, setToken, setUnauthorizedHandler } from './api'
 import type {
   CatalogItem,
   MqLog,
@@ -15,19 +15,14 @@ import type {
   UserVO
 } from './types'
 
-export const DEMO_PASSWORD = 'Ticket@2026'
-
-export const demoUsers = [
-  { username: 'zhaolan', name: '赵岚', tier: '黑钻会员' },
-  { username: 'linfeng', name: '林峰', tier: '金卡会员' },
-  { username: 'suwan', name: '苏晚', tier: '普通会员' }
-]
-
 export const state = reactive({
+  authReady: false,
+  lanIp: '',
+
   tab: 'theater' as Tab,
   username: '',
   user: null as UserVO | null,
-  context: { userId: 0, username: '', traceId: '' },
+  context: { userId: 0, username: '', role: 'USER', traceId: '' },
   pointsLogs: [] as PointsLog[],
   messages: [] as UserMessage[],
 
@@ -49,6 +44,8 @@ export const state = reactive({
   now: Date.now()
 })
 
+export const isAdmin = computed(() => state.user?.role === 'ADMIN')
+
 /* ---------------- toast ---------------- */
 
 export const toasts = ref<Toast[]>([])
@@ -62,35 +59,131 @@ export function toast(type: Toast['type'], title: string, detail?: string) {
   }, 4800)
 }
 
-/* ---------------- user ---------------- */
+/* ---------------- auth & session persistence ---------------- */
 
-export async function loginAs(username: string) {
-  const res = await api('/api/user/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password: DEMO_PASSWORD })
-  }, '')
-  if (res.code !== 200) {
-    toast('error', '登录失败', res.message)
-    return
-  }
-  setToken(res.data.accessToken)
-  state.username = username
-  state.user = res.data.user
+function resetUserSession() {
+  setToken('')
+  state.username = ''
+  state.user = null
+  state.context = { userId: 0, username: '', role: 'USER', traceId: '' }
+  state.pointsLogs = []
+  state.messages = []
+  state.orders = []
+  state.seataAudits = []
+  state.mqLogs = []
   state.selected = []
-  await Promise.all([loadProfile(), loadOrders(), loadTelemetry()])
+  state.ticket = null
+  state.messagesOpen = false
+  state.tab = 'theater'
 }
 
-export async function loadProfile() {
-  const res = await api('/api/user/profile')
-  if (res.code !== 200) return
+setUnauthorizedHandler(() => {
+  if (state.user) {
+    resetUserSession()
+    toast('info', '登录已过期', '请重新登录您的账号')
+  }
+})
+
+export async function fetchLanIp() {
+  const res = await api<{ lanIp: string }>('/api/order/public/lan-ip', {}, '')
+  if (res.code === 200 && res.data?.lanIp) {
+    state.lanIp = res.data.lanIp
+  }
+}
+
+export async function restoreSession() {
+  fetchLanIp()
+  const saved = getToken()
+  if (!saved) {
+    state.authReady = true
+    return
+  }
+  const ok = await loadProfile()
+  if (ok) {
+    await loadCatalogAndDefaultShow()
+    await loadOrders()
+    if (isAdmin.value) await loadTelemetry()
+  } else {
+    resetUserSession()
+  }
+  state.authReady = true
+}
+
+export async function login(username: string, password: string): Promise<{ ok: boolean; message?: string }> {
+  const res = await api(
+    '/api/user/auth/login',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, password })
+    },
+    ''
+  )
+  if (res.code !== 200 || !res.data?.accessToken) {
+    return { ok: false, message: res.message || '账号或密码不正确' }
+  }
+  setToken(res.data.accessToken)
   state.user = res.data.user
+  state.username = res.data.user.username
+  state.selected = []
+  state.tab = 'theater'
+
+  await Promise.all([
+    loadCatalogAndDefaultShow(),
+    loadProfile(),
+    loadOrders(),
+    res.data.user.role === 'ADMIN' ? loadTelemetry() : Promise.resolve()
+  ])
+  toast('success', `欢迎回来，${res.data.user.nickname}`)
+  return { ok: true }
+}
+
+export async function register(payload: {
+  username: string
+  password: string
+  nickname?: string
+  phone?: string
+}): Promise<{ ok: boolean; message?: string }> {
+  const res = await api(
+    '/api/user/auth/register',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    },
+    ''
+  )
+  if (res.code !== 200 || !res.data?.accessToken) {
+    return { ok: false, message: res.message || '注册失败' }
+  }
+  setToken(res.data.accessToken)
+  state.user = res.data.user
+  state.username = res.data.user.username
+  state.selected = []
+  state.tab = 'theater'
+
+  await Promise.all([loadCatalogAndDefaultShow(), loadProfile(), loadOrders()])
+  toast('success', '注册成功，已自动登录', '已为您发放 100 新人观演积分')
+  return { ok: true }
+}
+
+export function logout() {
+  resetUserSession()
+  toast('info', '已退出登录')
+}
+
+export async function loadProfile(): Promise<boolean> {
+  const res = await api('/api/user/profile')
+  if (res.code !== 200 || !res.data?.user) return false
+  state.user = res.data.user
+  state.username = res.data.user.username
   state.context = {
     userId: res.data.threadLocalUserId,
     username: res.data.threadLocalUsername,
+    role: res.data.threadLocalRole || res.data.user.role || 'USER',
     traceId: res.data.traceId
   }
   state.pointsLogs = res.data.pointsLogs || []
   state.messages = res.data.messages || []
+  return true
 }
 
 export async function markMessageRead(id: number) {
@@ -109,14 +202,23 @@ export async function markAllMessagesRead() {
 /* ---------------- catalog & seats ---------------- */
 
 export async function loadCatalog() {
-  const res = await api<CatalogItem[]>('/api/show/public/list')
+  const res = await api<CatalogItem[]>('/api/show/public/list', {}, '')
   if (res.code === 200) state.catalog = res.data || []
+}
+
+export async function loadCatalogAndDefaultShow() {
+  if (!state.catalog.length) await loadCatalog()
+  if (state.catalog.length && !state.showId) {
+    await selectShow(state.catalog[0].show.id)
+  } else if (state.sessionId) {
+    await loadSeats(state.sessionId)
+  }
 }
 
 export async function selectShow(showId: number) {
   state.showId = showId
   state.selected = []
-  const res = await api(`/api/show/public/detail/${showId}`)
+  const res = await api(`/api/show/public/detail/${showId}`, {}, '')
   if (res.code !== 200 || !res.data?.show) return
   state.show = res.data.show
   state.sessions = res.data.sessions || []
@@ -128,7 +230,7 @@ export async function loadSeats(sessionId = state.sessionId) {
   if (!sessionId) return
   if (sessionId !== state.sessionId) state.selected = []
   state.sessionId = sessionId
-  const res = await api(`/api/show/public/sessions/${sessionId}/seats`)
+  const res = await api(`/api/show/public/sessions/${sessionId}/seats`, {}, '')
   if (res.code !== 200) return
   state.seats = res.data.seats || []
   const available = new Set(state.seats.filter(s => s.status === 'AVAILABLE').map(s => s.id))
@@ -136,16 +238,20 @@ export async function loadSeats(sessionId = state.sessionId) {
 }
 
 export async function rebuildCache() {
-  await api(`/api/show/cache/evict/${state.showId}`, { method: 'POST' })
-  const res = await api(`/api/show/public/detail/${state.showId}`)
+  const evict = await api(`/api/show/cache/evict/${state.showId}`, { method: 'POST' })
+  if (evict.code !== 200) {
+    toast('error', '操作受限', evict.message)
+    return
+  }
+  const res = await api(`/api/show/public/detail/${state.showId}`, {}, '')
   if (res.code !== 200) return
   state.cache = { status: res.data.cacheStatus, ttl: res.data.ttlSeconds }
   toast('info', '缓存已重建', `Redisson 互斥锁回源 MySQL，TTL ${res.data.ttlSeconds}s（含随机抖动）`)
 }
 
 export async function probePenetration() {
-  const first = await api('/api/show/public/detail/99999')
-  const second = await api('/api/show/public/detail/99999')
+  const first = await api('/api/show/public/detail/99999', {}, '')
+  const second = await api('/api/show/public/detail/99999', {}, '')
   toast(
     'info',
     '穿透防护生效',
@@ -156,11 +262,13 @@ export async function probePenetration() {
 /* ---------------- orders & telemetry ---------------- */
 
 export async function loadOrders() {
+  if (!state.user) return
   const res = await api<TicketOrder[]>('/api/order/my')
   if (res.code === 200) state.orders = res.data || []
 }
 
 export async function loadTelemetry() {
+  if (!isAdmin.value) return
   const res = await api('/api/order/telemetry')
   if (res.code !== 200) return
   state.seataAudits = res.data.seataAudits || []
@@ -168,7 +276,13 @@ export async function loadTelemetry() {
 }
 
 export async function refreshAll() {
-  await Promise.all([loadSeats(), loadOrders(), loadTelemetry(), loadProfile()])
+  if (!state.user) return
+  await Promise.all([
+    loadSeats(),
+    loadOrders(),
+    loadProfile(),
+    isAdmin.value ? loadTelemetry() : Promise.resolve()
+  ])
 }
 
 export async function payOrder(order: TicketOrder) {

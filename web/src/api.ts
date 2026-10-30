@@ -1,9 +1,37 @@
 import type { ApiResult } from './types'
 
-let token = ''
+const AUTH_TOKEN_KEY = 'pulseticket_token'
+
+function readSavedToken(): string {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+let token = readSavedToken()
+let unauthorizedHandler: (() => void) | null = null
+
+export function getToken(): string {
+  return token
+}
 
 export function setToken(value: string) {
   token = value
+  try {
+    if (value) {
+      localStorage.setItem(AUTH_TOKEN_KEY, value)
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY)
+    }
+  } catch {
+    // ignore storage errors in restricted environments
+  }
+}
+
+export function setUnauthorizedHandler(fn: () => void) {
+  unauthorizedHandler = fn
 }
 
 export async function api<T = any>(
@@ -21,7 +49,19 @@ export async function api<T = any>(
   try {
     const resp = await fetch(path, { ...options, headers })
     const text = await resp.text()
-    return text ? JSON.parse(text) : { code: resp.status, message: resp.statusText, data: null as T }
+    const parsed: ApiResult<T> = text
+      ? JSON.parse(text)
+      : { code: resp.status, message: resp.statusText, data: null as T }
+
+    if (
+      (resp.status === 401 || parsed.code === 401) &&
+      overrideToken === undefined &&
+      !path.startsWith('/api/user/auth/')
+    ) {
+      setToken('')
+      unauthorizedHandler?.()
+    }
+    return parsed
   } catch (e: any) {
     return { code: 503, message: e?.message || '网络异常，请确认网关已启动', data: null as T }
   }

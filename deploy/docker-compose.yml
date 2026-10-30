@@ -24,9 +24,9 @@ services:
     environment:
       MODE: standalone
       PREFER_HOST_MODE: hostname
-      JVM_XMS: 256m
-      JVM_XMX: 256m
-      JVM_XMN: 128m
+      JVM_XMS: 512m
+      JVM_XMX: 512m
+      JVM_XMN: 256m
     ports:
       - "8848:8848"
       - "9848:9848"

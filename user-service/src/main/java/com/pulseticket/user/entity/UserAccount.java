@@ -15,6 +15,7 @@ public class UserAccount {
     private String nickname;
     private String phone;
     private String vipLevel;
+    private String role;
     private Integer pointsBalance;
     private Integer totalOrders;
     private LocalDateTime createdAt;
@@ -66,6 +67,14 @@ public class UserAccount {
 
     public void setVipLevel(String vipLevel) {
         this.vipLevel = vipLevel;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 
     public Integer getPointsBalance() {

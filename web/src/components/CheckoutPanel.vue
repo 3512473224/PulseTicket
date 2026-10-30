@@ -5,12 +5,19 @@ import ToggleRow from './ToggleRow.vue'
 import type { SeatItem, ShowSession } from '../types'
 import { money, zones } from '../utils'
 
-const props = defineProps<{ seats: SeatItem[]; session?: ShowSession; submitting: boolean }>()
+const props = defineProps<{
+  seats: SeatItem[]
+  session?: ShowSession
+  submitting: boolean
+  isAdmin?: boolean
+}>()
 const emit = defineEmits<{ (e: 'remove', seat: SeatItem): void; (e: 'submit'): void }>()
 const fastClose = defineModel<boolean>('fastClose', { default: true })
 const rollback = defineModel<boolean>('rollback', { default: false })
 
 const total = computed(() => props.seats.reduce((sum, s) => sum + Number(s.price), 0))
+const activeRollback = computed(() => Boolean(props.isAdmin && rollback.value))
+const holdWindowText = computed(() => (props.isAdmin && fastClose.value ? '15 秒' : '15 分钟'))
 </script>
 
 <template>
@@ -28,7 +35,14 @@ const total = computed(() => props.seats.reduce((sum, s) => sum + Number(s.price
       >
         在座位图中选择<br />最多 4 个座位
       </div>
-      <TransitionGroup v-else tag="ul" class="divide-y divide-line" move-class="transition" enter-active-class="transition" enter-from-class="opacity-0">
+      <TransitionGroup
+        v-else
+        tag="ul"
+        class="divide-y divide-line"
+        move-class="transition"
+        enter-active-class="transition"
+        enter-from-class="opacity-0"
+      >
         <li v-for="s in seats" :key="s.id" class="flex items-center justify-between py-3">
           <div class="flex items-center gap-3">
             <span class="h-2 w-2 rounded-full" :class="zones[s.zoneCode].dot" />
@@ -51,31 +65,32 @@ const total = computed(() => props.seats.reduce((sum, s) => sum + Number(s.price
       </TransitionGroup>
     </div>
 
-    <div class="mt-6 space-y-5 border-t border-line pt-6">
-      <p class="eyebrow">演示选项</p>
+    <!-- Dedicated Chaos & Timeout Drills: Strictly visible to ADMIN only -->
+    <div v-if="isAdmin" class="mt-6 space-y-5 border-t border-line pt-6">
+      <p class="eyebrow">架构演练开关 · ADMIN</p>
       <ToggleRow v-model="fastClose" title="15 秒超时关单" description="未支付订单由死信队列自动关闭" />
       <ToggleRow v-model="rollback" tone="brick" title="模拟事务异常" description="锁座后抛出异常，验证 Seata 自动回滚" />
     </div>
 
     <div class="mt-6 border-t border-line pt-6">
       <div class="flex items-baseline justify-between">
-        <span class="text-sm text-ink-soft">合计</span>
+        <span class="text-sm text-ink-soft">应付合计</span>
         <span class="text-[32px] font-semibold leading-none tracking-tight tabular">
           <span class="mr-0.5 text-lg font-normal text-ink-soft">¥</span>{{ money(total) }}
         </span>
       </div>
       <button
         class="btn-primary mt-6 h-12 w-full"
-        :class="rollback ? '!bg-brick hover:!bg-[#9c3a22]' : ''"
+        :class="activeRollback ? '!bg-brick hover:!bg-[#9c3a22]' : ''"
         :disabled="!seats.length || submitting"
         @click="emit('submit')"
       >
         <template v-if="submitting">正在锁座…</template>
-        <template v-else-if="rollback">提交并触发回滚</template>
-        <template v-else>确认选座</template>
+        <template v-else-if="activeRollback">提交并触发回滚</template>
+        <template v-else>确认选座下单</template>
       </button>
       <p class="mt-3 text-center text-xs text-ink-mute">
-        提交后座位将为你保留 {{ fastClose ? '15 秒' : '15 分钟' }}
+        提交后座位将为你锁定保留 {{ holdWindowText }}
       </p>
     </div>
   </div>

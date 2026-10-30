@@ -4,9 +4,32 @@ import { api } from '../api'
 import SeatMap from '../components/SeatMap.vue'
 import CheckoutPanel from '../components/CheckoutPanel.vue'
 import StressLab from '../components/StressLab.vue'
-import { loadSeats, probePenetration, rebuildCache, refreshAll, selectShow, state, toast } from '../store'
+import { isAdmin, loadSeats, probePenetration, rebuildCache, refreshAll, selectShow, state, toast } from '../store'
 import type { SeatItem } from '../types'
 import { cacheLabel, categoryLabel, money, posterTheme, shortTitle } from '../utils'
+
+const categoryFilter = ref<string>('ALL')
+const categories = [
+  { key: 'ALL', label: '全部演出' },
+  { key: 'CONCERT', label: '演唱会' },
+  { key: 'MUSICAL', label: '音乐剧' },
+  { key: 'IMAX_MOVIE', label: 'IMAX 电影' },
+  { key: 'LIVEHOUSE', label: 'Livehouse' }
+]
+
+const filteredCatalog = computed(() =>
+  categoryFilter.value === 'ALL'
+    ? state.catalog
+    : state.catalog.filter(c => c.show.category === categoryFilter.value)
+)
+
+async function chooseCategory(cat: string) {
+  categoryFilter.value = cat
+  const list = cat === 'ALL' ? state.catalog : state.catalog.filter(c => c.show.category === cat)
+  if (list.length && !list.some(c => c.show.id === state.showId)) {
+    await selectShow(list[0].show.id)
+  }
+}
 
 const fastClose = ref(true)
 const rollback = ref(false)
@@ -23,7 +46,7 @@ function toggle(seat: SeatItem) {
   if (i >= 0) {
     state.selected.splice(i, 1)
   } else if (state.selected.length >= 4) {
-    toast('info', '每笔订单最多 4 个座位')
+    toast('info', '每笔订单最多可选择 4 个座位')
   } else {
     state.selected.push(seat.id)
   }
@@ -32,14 +55,15 @@ function toggle(seat: SeatItem) {
 async function submit() {
   if (!selectedSeats.value.length) return
   submitting.value = true
-  const withRollback = rollback.value
+  const useFastClose = isAdmin.value && fastClose.value
+  const withRollback = isAdmin.value && rollback.value
   try {
     const res = await api('/api/order/create', {
       method: 'POST',
       body: JSON.stringify({
         sessionId: state.sessionId,
         seatIds: [...state.selected],
-        fastCloseDemo: fastClose.value,
+        fastCloseDemo: useFastClose,
         simulateSeataRollback: withRollback
       })
     })
@@ -47,7 +71,11 @@ async function submit() {
 
     if (res.code === 200) {
       state.selected = []
-      toast('success', '座位已锁定', `订单 ${res.data.orderNo}，请在 ${fastClose.value ? '15 秒' : '15 分钟'}内完成支付`)
+      toast(
+        'success',
+        '座位已锁定',
+        `订单 ${res.data.orderNo}，请在 ${useFastClose ? '15 秒' : '15 分钟'}内完成支付`
+      )
       state.tab = 'orders'
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } else if (withRollback) {
@@ -65,22 +93,39 @@ async function submit() {
   <div class="space-y-14">
     <!-- Shows -->
     <section>
-      <div class="flex items-end justify-between">
+      <div class="flex flex-wrap items-end justify-between gap-5">
         <div>
           <p class="eyebrow">正在热售</p>
-          <h1 class="mt-2 text-[28px] font-semibold tracking-tight">选择一场演出</h1>
+          <h1 class="mt-2 text-[28px] font-semibold tracking-tight">近期热门演出与放映</h1>
         </div>
-        <span class="text-sm text-ink-mute tabular">{{ state.catalog.length }} 场在售</span>
+
+        <div class="flex flex-wrap items-center gap-1.5">
+          <button
+            v-for="cat in categories"
+            :key="cat.key"
+            class="rounded-full px-3.5 py-1.5 text-xs transition"
+            :class="
+              categoryFilter === cat.key
+                ? 'bg-ink font-medium text-white'
+                : 'border border-line bg-white text-ink-soft hover:border-ink/30 hover:text-ink'
+            "
+            @click="chooseCategory(cat.key)"
+          >
+            {{ cat.label }}
+          </button>
+        </div>
       </div>
 
       <div class="mt-7 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <button
-          v-for="item in state.catalog"
+          v-for="item in filteredCatalog"
           :key="item.show.id"
           class="group rounded-[22px] border bg-white p-2.5 text-left transition duration-200"
-          :class="state.showId === item.show.id
-            ? 'border-ink/80 shadow-soft'
-            : 'border-line hover:-translate-y-0.5 hover:border-ink/25 hover:shadow-soft'"
+          :class="
+            state.showId === item.show.id
+              ? 'border-ink/80 shadow-soft'
+              : 'border-line hover:-translate-y-0.5 hover:border-ink/25 hover:shadow-soft'
+          "
           @click="selectShow(item.show.id)"
         >
           <div
@@ -149,11 +194,8 @@ async function submit() {
                 <span class="font-medium">¥{{ money(item.show.minPrice) }}</span>
                 <span class="text-xs text-ink-mute"> 起</span>
               </p>
-              <span
-                v-if="state.showId === item.show.id"
-                class="text-[11px] font-medium text-ink"
-              >
-                当前选座
+              <span v-if="state.showId === item.show.id" class="text-[11px] font-medium text-ink">
+                正在选座
               </span>
             </div>
           </div>
@@ -165,11 +207,11 @@ async function submit() {
     <section v-if="state.show" class="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div class="card">
         <div class="p-8 pb-7 md:p-10 md:pb-8">
-          <!-- Top meta bar: category on left, cache telemetry micro-controls on right -->
           <div class="flex flex-wrap items-center justify-between gap-4">
             <p class="eyebrow">{{ categoryLabel[state.show.category] }} · {{ state.show.city }}</p>
 
-            <div class="flex items-center gap-3 text-xs text-ink-soft">
+            <!-- ADMIN-only cache telemetry controls -->
+            <div v-if="isAdmin" class="flex items-center gap-3 text-xs text-ink-soft">
               <span
                 class="inline-flex items-center gap-1.5 rounded-full bg-paper px-2.5 py-1"
                 :title="`${state.cache.status} · TTL ${state.cache.ttl ?? '-'}s`"
@@ -184,19 +226,29 @@ async function submit() {
               <span class="h-3 w-px bg-line" />
               <button class="transition hover:text-ink" @click="probePenetration">穿透测试</button>
             </div>
+
+            <!-- Pure commercial badge for normal buyers -->
+            <span v-else class="rounded-full bg-paper px-3 py-1 text-xs text-ink-soft">
+              {{ state.show.badgeText || '官方电子票 · 实名选座' }}
+            </span>
           </div>
 
           <h2 class="mt-3 text-2xl font-semibold leading-snug tracking-tight">{{ state.show.title }}</h2>
           <p class="mt-2 text-sm text-ink-soft">{{ state.show.venueName }}</p>
+          <p v-if="state.show.subtitle" class="mt-1.5 text-xs leading-relaxed text-ink-mute">
+            {{ state.show.subtitle }}
+          </p>
 
           <div class="mt-7 flex flex-wrap gap-2">
             <button
               v-for="s in state.sessions"
               :key="s.id"
               class="rounded-full border px-4 py-2 text-sm transition"
-              :class="state.sessionId === s.id
-                ? 'border-ink bg-ink text-white'
-                : 'border-line text-ink-soft hover:border-ink/30 hover:text-ink'"
+              :class="
+                state.sessionId === s.id
+                  ? 'border-ink bg-ink text-white'
+                  : 'border-line text-ink-soft hover:border-ink/30 hover:text-ink'
+              "
               @click="loadSeats(s.id)"
             >
               {{ s.sessionTitle }}
@@ -207,7 +259,7 @@ async function submit() {
         <div class="border-t border-line p-8 md:p-10">
           <div class="mb-8 flex items-center justify-between text-xs text-ink-soft">
             <span>{{ session?.hallName }}</span>
-            <span class="tabular">剩余 {{ availableCount }} / {{ state.seats.length }} 座</span>
+            <span class="tabular">剩余可选 {{ availableCount }} / {{ state.seats.length }} 座</span>
           </div>
           <SeatMap :seats="state.seats" :selected="state.selected" @toggle="toggle" />
         </div>
@@ -220,12 +272,14 @@ async function submit() {
           :seats="selectedSeats"
           :session="session"
           :submitting="submitting"
+          :is-admin="isAdmin"
           @remove="toggle"
           @submit="submit"
         />
       </aside>
     </section>
 
-    <StressLab />
+    <!-- Stress testing lab is strictly isolated to the dedicated ADMIN account -->
+    <StressLab v-if="isAdmin" />
   </div>
 </template>

@@ -30,10 +30,10 @@ import java.util.UUID;
  * 网关全局登录态校验与透传过滤器 (面试第一高频必考题：登录态透传第一棒)
  * 核心职责：
  * 1. 拦截一切外部伪造的 /internal/** 内部接口调用；
- * 2. 放行登录与公开演出查询白名单；
+ * 2. 放行登录注册、公开演出查询与微信扫码验票白名单；
  * 3. 统一校验 Bearer JWT 签名与过期时间；
- * 4. 【防伪造关键一步】：先 remove 掉外部可能伪造的 X-User-Id / X-Username 请求头，
- *    再将验签解析出的真实 userId / username 注入请求头转发给下游微服务！
+ * 4. 【防伪造关键一步】：先 remove 掉外部可能伪造的 X-User-Id / X-Username / X-User-Role 请求头，
+ *    再将验签解析出的真实 userId / username / role 注入请求头转发给下游微服务！
  */
 @Component
 public class AuthGlobalFilter implements GlobalFilter, Ordered {
@@ -48,6 +48,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     private static final List<String> WHITELIST_PATHS = List.of(
             "/api/user/auth/**",
             "/api/show/public/**",
+            "/api/order/public/**",
             "/actuator/**"
     );
 
@@ -58,7 +59,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         String traceId = "tr-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
 
         // 1. 严禁外部通过网关直接访问内部 Feign 接口
-        if (pathMatcher.match("/internal/**", path)) {
+        if (pathMatcher.match("/internal/**", path) || pathMatcher.match("/**/internal/**", path)) {
             return writeJsonError(exchange.getResponse(), HttpStatus.FORBIDDEN, 403, "禁止外部直接访问微服务内部接口", traceId);
         }
 
@@ -71,6 +72,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
                     .headers(h -> {
                         h.remove(UserContext.HEADER_USER_ID);
                         h.remove(UserContext.HEADER_USERNAME);
+                        h.remove(UserContext.HEADER_USER_ROLE);
                         h.set(UserContext.HEADER_TRACE_ID, traceId);
                     })
                     .build();
@@ -79,7 +81,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
         // 3. 校验 Bearer Token
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            return writeJsonError(exchange.getResponse(), HttpStatus.UNAUTHORIZED, 401, "未登录或缺少 Authorization Bearer 令牌", traceId);
+            return writeJsonError(exchange.getResponse(), HttpStatus.UNAUTHORIZED, 401, "请先登录账号", traceId);
         }
 
         String token = authHeader.substring(7).trim();
@@ -87,14 +89,18 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             Claims claims = JwtUtils.parseToken(token, jwtSecret);
             String userId = String.valueOf(claims.get("userId"));
             String username = String.valueOf(claims.get("username"));
+            Object roleClaim = claims.get("role");
+            String role = roleClaim != null ? String.valueOf(roleClaim) : "USER";
 
-            // 4. 先清除客户端可能伪造的同名头，再注入可信身份头透传给下游服务
+            // 4. 先清除客户端可能伪造的同名头，再注入可信身份与角色头透传给下游服务
             ServerHttpRequest mutatedRequest = request.mutate()
                     .headers(headers -> {
                         headers.remove(UserContext.HEADER_USER_ID);
                         headers.remove(UserContext.HEADER_USERNAME);
+                        headers.remove(UserContext.HEADER_USER_ROLE);
                         headers.set(UserContext.HEADER_USER_ID, userId);
                         headers.set(UserContext.HEADER_USERNAME, username);
+                        headers.set(UserContext.HEADER_USER_ROLE, role);
                         headers.set(UserContext.HEADER_TRACE_ID, traceId);
                     })
                     .build();
@@ -103,9 +109,17 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         } catch (Exception ex) {
             log.warn("JWT verification failed on path {}: {}", path, ex.getMessage());
             if (isWhitelisted) {
-                return chain.filter(exchange);
+                ServerHttpRequest sanitized = request.mutate()
+                        .headers(h -> {
+                            h.remove(UserContext.HEADER_USER_ID);
+                            h.remove(UserContext.HEADER_USERNAME);
+                            h.remove(UserContext.HEADER_USER_ROLE);
+                            h.set(UserContext.HEADER_TRACE_ID, traceId);
+                        })
+                        .build();
+                return chain.filter(exchange.mutate().request(sanitized).build());
             }
-            return writeJsonError(exchange.getResponse(), HttpStatus.UNAUTHORIZED, 401, "登录令牌已过期或签名非法，请重新登录", traceId);
+            return writeJsonError(exchange.getResponse(), HttpStatus.UNAUTHORIZED, 401, "登录凭证已过期，请重新登录", traceId);
         }
     }
 
@@ -124,6 +138,6 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
     @Override
     public int getOrder() {
-        return -100; // 高优先级执行
+        return -100;
     }
 }

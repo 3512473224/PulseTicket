@@ -1,5 +1,7 @@
 package com.pulseticket.show.controller;
 
+import com.pulseticket.common.context.UserContext;
+import com.pulseticket.common.exception.BizException;
 import com.pulseticket.common.result.Result;
 import com.pulseticket.show.service.ShowCacheAndSeatService;
 import org.springframework.web.bind.annotation.*;
@@ -34,6 +36,9 @@ public class ShowPublicController {
 
     @PostMapping("/cache/evict/{showId}")
     public Result<String> evictCache(@PathVariable Long showId) {
+        if (!UserContext.isAdmin()) {
+            throw new BizException(403, "仅限架构运维专员执行缓存驱逐演练");
+        }
         showService.evictShowCaches(showId, null);
         return Result.ok("已清除 Redis 演出详情缓存 key=ticket:cache:show:" + showId);
     }

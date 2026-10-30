@@ -182,6 +182,7 @@ const services = [
         <dl class="mt-5 space-y-3 text-sm">
           <div class="flex justify-between gap-4"><dt class="text-ink-soft">X-User-Id</dt><dd class="font-mono">{{ state.context.userId }}</dd></div>
           <div class="flex justify-between gap-4"><dt class="text-ink-soft">X-Username</dt><dd class="font-mono">{{ state.context.username }}</dd></div>
+          <div class="flex justify-between gap-4"><dt class="text-ink-soft">X-User-Role</dt><dd class="font-mono text-brick">{{ state.context.role }}</dd></div>
           <div class="flex justify-between gap-4"><dt class="text-ink-soft">X-Trace-Id</dt><dd class="truncate font-mono">{{ state.context.traceId }}</dd></div>
         </dl>
 

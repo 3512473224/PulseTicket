@@ -27,6 +27,10 @@ public class FeignRelayAutoConfig {
             if (username != null && !username.isBlank()) {
                 template.header(UserContext.HEADER_USERNAME, username);
             }
+            String role = UserContext.getRole();
+            if (role != null && !role.isBlank()) {
+                template.header(UserContext.HEADER_USER_ROLE, role);
+            }
             String traceId = UserContext.getTraceId();
             if (traceId != null && !traceId.isBlank()) {
                 template.header(UserContext.HEADER_TRACE_ID, traceId);

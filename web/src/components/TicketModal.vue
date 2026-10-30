@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
-import { X } from 'lucide-vue-next'
+import { ExternalLink, X } from 'lucide-vue-next'
 import { state } from '../store'
 import { groupSeatsByZone, money, posterTheme } from '../utils'
 
@@ -13,37 +13,39 @@ function onKey(e: KeyboardEvent) {
 }
 
 onMounted(() => window.addEventListener('keydown', onKey))
-onUnmounted(() => window.addEventListener('keydown', onKey))
+onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 const groupedSeats = computed(() => groupSeatsByZone(order.value?.seatLabelsJson))
 
-const qrPayload = computed(() => {
+/**
+ * 微信「扫一扫」仅直接打开 http/https 链接，拦截纯文本多行内容。
+ * 线上域名部署时自动使用当前 Origin；本地 localhost 访问时自动替换为局域网 IPv4，
+ * 同一 Wi-Fi 下手机微信扫码即可直接打开移动端电子票闸机核验页。
+ */
+const verifyUrl = computed(() => {
   const o = order.value
-  if (!o) return ''
-  const seatSummary = groupedSeats.value
-    .map(g => (g.zone ? `${g.zone} ${g.seats.join(' / ')}` : g.seats.join(' / ')))
-    .join('；')
-  return [
-    '【PulseTicket 电子票凭证】',
-    `核验码：${o.ticketCode}`,
-    '状态：已出票有效 (PAID)',
-    `演出：${o.showTitle}`,
-    `场馆：${o.venueName}`,
-    `场次：${o.sessionTitle}`,
-    `席位：${seatSummary}`,
-    `实付：¥${money(o.totalAmount)}`,
-    `单号：${o.orderNo}`
-  ].join('\n')
+  if (!o?.ticketCode) return ''
+  const loc = window.location
+  const isLocal = loc.hostname === 'localhost' || loc.hostname === '127.0.0.1'
+  const host =
+    isLocal && state.lanIp && state.lanIp !== '127.0.0.1'
+      ? `${state.lanIp}${loc.port ? `:${loc.port}` : ''}`
+      : loc.host
+  return `${loc.protocol}//${host}/?verify=${encodeURIComponent(o.ticketCode)}`
 })
 
+const localPreviewHref = computed(() =>
+  order.value?.ticketCode ? `/?verify=${encodeURIComponent(order.value.ticketCode)}` : '#'
+)
+
 watch(
-  qrPayload,
-  async text => {
-    if (!text) {
+  verifyUrl,
+  async url => {
+    if (!url) {
       qrSvg.value = ''
       return
     }
-    qrSvg.value = await QRCode.toString(text, {
+    qrSvg.value = await QRCode.toString(url, {
       type: 'svg',
       margin: 1,
       errorCorrectionLevel: 'M',
@@ -124,7 +126,18 @@ watch(
             />
             <p class="mt-4 font-mono text-lg font-medium tracking-[0.2em]">{{ order.ticketCode }}</p>
             <p class="mt-1 font-mono text-[11px] text-ink-mute">{{ order.orderNo }}</p>
-            <p class="mt-2 text-[11px] text-ink-mute">支持微信 / 手机相机直接扫码核验票面信息</p>
+            <p class="mt-2.5 text-center text-[11px] text-ink-soft">
+              微信扫一扫直达 H5 闸机核验页（同局域网或线上域名）
+            </p>
+            <a
+              :href="localPreviewHref"
+              target="_blank"
+              rel="noopener"
+              class="mt-2.5 inline-flex items-center gap-1 rounded-full border border-line bg-white px-3 py-1 text-[11px] font-medium text-ink-soft transition hover:border-ink/35 hover:text-ink"
+            >
+              预览扫码核验页
+              <ExternalLink class="h-3 w-3" />
+            </a>
           </div>
         </div>
       </div>

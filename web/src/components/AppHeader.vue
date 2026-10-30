@@ -1,33 +1,59 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Bell, Check, ChevronDown, Ticket } from 'lucide-vue-next'
-import { demoUsers, loadOrders, loadProfile, loadTelemetry, loginAs, state } from '../store'
+import { Bell, ChevronDown, LogOut, ShieldCheck, Ticket } from 'lucide-vue-next'
+import { isAdmin, loadOrders, loadProfile, loadTelemetry, logout, state } from '../store'
 import { money } from '../utils'
 import type { Tab } from '../types'
 
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 
-const nav: { key: Tab; label: string }[] = [
-  { key: 'theater', label: '演出' },
-  { key: 'orders', label: '我的订单' },
-  { key: 'telemetry', label: '系统观测' }
-]
+const nav = computed<{ key: Tab; label: string }[]>(() => {
+  const base: { key: Tab; label: string }[] = [
+    { key: 'theater', label: '演出选座' },
+    { key: 'orders', label: '我的订单' }
+  ]
+  if (isAdmin.value) {
+    base.push({ key: 'telemetry', label: '架构观测' })
+  }
+  return base
+})
 
 const unpaid = computed(() => state.orders.filter(o => o.status === 'UNPAID').length)
 const unread = computed(() => state.messages.filter(m => !m.isRead).length)
-const me = computed(() => demoUsers.find(u => u.username === state.username))
+
+const vipLabelMap: Record<string, string> = {
+  DIAMOND: '黑钻会员',
+  GOLD: '金卡会员',
+  NORMAL: '观演会员'
+}
+
+const roleBadgeText = computed(() => {
+  if (!state.user) return ''
+  if (isAdmin.value) return '架构运维专员'
+  return vipLabelMap[state.user.vipLevel] || '观演会员'
+})
+
+const displayName = computed(() => {
+  const raw = (state.user?.nickname || state.user?.username || '').trim()
+  return raw.split(' · ')[0]
+})
+
+const avatarChar = computed(() => {
+  return (displayName.value || 'P').charAt(0).toUpperCase()
+})
 
 function go(tab: Tab) {
+  menuOpen.value = false
   state.tab = tab
   if (tab === 'orders') loadOrders()
-  if (tab === 'telemetry') Promise.all([loadTelemetry(), loadProfile()])
+  if (tab === 'telemetry' && isAdmin.value) Promise.all([loadTelemetry(), loadProfile()])
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-async function switchUser(username: string) {
+function handleLogout() {
   menuOpen.value = false
-  if (username !== state.username) await loginAs(username)
+  logout()
 }
 
 function onDocClick(e: MouseEvent) {
@@ -47,6 +73,13 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
             <Ticket class="h-4 w-4 text-paper" :stroke-width="2" />
           </span>
           <span class="text-[17px] font-semibold tracking-tight">PulseTicket</span>
+          <span
+            v-if="isAdmin"
+            class="ml-1 hidden items-center gap-1 rounded-full bg-brick-soft px-2.5 py-0.5 text-[11px] font-medium text-brick sm:inline-flex"
+          >
+            <ShieldCheck class="h-3 w-3" />
+            运维演练模式
+          </span>
         </button>
 
         <nav class="hidden items-center gap-1 md:flex">
@@ -87,10 +120,13 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
             class="flex items-center gap-2 rounded-full py-1 pl-1 pr-3 transition hover:bg-ink/[0.06]"
             @click="menuOpen = !menuOpen"
           >
-            <span class="grid h-7 w-7 place-items-center rounded-full bg-ink text-xs font-medium text-white">
-              {{ me?.name.slice(-1) }}
+            <span
+              class="grid h-7 w-7 place-items-center rounded-full text-xs font-medium text-white"
+              :class="isAdmin ? 'bg-brick' : 'bg-ink'"
+            >
+              {{ avatarChar }}
             </span>
-            <span class="text-sm font-medium">{{ me?.name }}</span>
+            <span class="text-sm font-medium">{{ displayName }}</span>
             <ChevronDown class="h-3.5 w-3.5 text-ink-mute" />
           </button>
 
@@ -101,24 +137,48 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
             leave-to-class="opacity-0 -translate-y-1"
           >
             <div
-              v-if="menuOpen"
-              class="absolute right-0 mt-2 w-60 overflow-hidden rounded-2xl border border-line bg-white p-1.5 shadow-float"
+              v-if="menuOpen && state.user"
+              class="absolute right-0 mt-2 w-64 overflow-hidden rounded-2xl border border-line bg-white p-2 shadow-float"
             >
-              <p class="px-3 pb-1 pt-2 eyebrow">切换演示账号</p>
+              <div class="rounded-xl bg-paper px-3.5 py-3">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="truncate text-sm font-semibold text-ink">{{ displayName }}</span>
+                  <span
+                    class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                    :class="isAdmin ? 'bg-brick-soft text-brick' : 'bg-white text-ink-soft'"
+                  >
+                    {{ roleBadgeText }}
+                  </span>
+                </div>
+                <p class="mt-1 font-mono text-xs text-ink-mute">@{{ state.user.username }} · {{ state.user.phone }}</p>
+              </div>
+
+              <div class="mt-1.5 space-y-0.5">
+                <button
+                  class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
+                  @click="go('orders')"
+                >
+                  <span>我的订单票夹</span>
+                  <span v-if="unpaid" class="text-xs font-medium text-brick tabular">{{ unpaid }} 待付</span>
+                </button>
+                <button
+                  v-if="isAdmin"
+                  class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
+                  @click="go('telemetry')"
+                >
+                  <span>架构观测面板</span>
+                  <span class="font-mono text-[11px] text-ink-mute">ADMIN</span>
+                </button>
+              </div>
+
+              <div class="my-1.5 border-t border-line" />
+
               <button
-                v-for="u in demoUsers"
-                :key="u.username"
-                class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-paper"
-                @click="switchUser(u.username)"
+                class="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-brick transition hover:bg-brick-soft/60"
+                @click="handleLogout"
               >
-                <span class="grid h-8 w-8 place-items-center rounded-full bg-paper text-sm font-medium text-ink">
-                  {{ u.name.slice(-1) }}
-                </span>
-                <span class="flex-1">
-                  <span class="block text-sm font-medium">{{ u.name }}</span>
-                  <span class="block text-xs text-ink-mute">{{ u.tier }}</span>
-                </span>
-                <Check v-if="u.username === state.username" class="h-4 w-4 text-ink" />
+                <LogOut class="h-4 w-4" />
+                <span>退出登录</span>
               </button>
             </div>
           </Transition>

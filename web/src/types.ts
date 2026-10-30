@@ -2,6 +2,7 @@ export type Tab = 'theater' | 'orders' | 'telemetry'
 export type ZoneCode = 'VIP' | 'STAGE_SIDE' | 'STANDARD'
 export type SeatStatus = 'AVAILABLE' | 'LOCKED' | 'SOLD'
 export type OrderStatus = 'UNPAID' | 'PAID' | 'CLOSED'
+export type UserRole = 'USER' | 'ADMIN'
 
 export interface ApiResult<T = any> {
   code: number
@@ -16,6 +17,7 @@ export interface UserVO {
   nickname: string
   phone: string
   vipLevel: string
+  role?: UserRole
   pointsBalance: number
   totalOrders: number
 }
@@ -76,6 +78,22 @@ export interface TicketOrder {
   seataXid?: string | null
   expireAt: string
   createdAt: string
+}
+
+export interface VerifiedTicket {
+  valid: boolean
+  status: OrderStatus
+  ticketCode: string
+  orderNo: string
+  showId: number
+  showTitle: string
+  venueName: string
+  sessionTitle: string
+  seatLabelsJson: string
+  seatCount: number
+  totalAmount: number
+  paidAt?: string | null
+  verifiedAt: string
 }
 
 export interface SeataAudit {

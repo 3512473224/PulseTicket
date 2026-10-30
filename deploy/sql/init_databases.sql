@@ -20,6 +20,7 @@ CREATE TABLE user_account (
     nickname VARCHAR(64) NOT NULL COMMENT '用户昵称',
     phone VARCHAR(32) NOT NULL COMMENT '脱敏手机号',
     vip_level VARCHAR(32) NOT NULL DEFAULT 'GOLD' COMMENT '会员等级: NORMAL / GOLD / BLACK_DIAMOND',
+    role VARCHAR(16) NOT NULL DEFAULT 'USER' COMMENT '角色权限: USER(普通购票用户) / ADMIN(架构运维专员)',
     points_balance INT NOT NULL DEFAULT 0 COMMENT '当前可用积分余额',
     total_orders INT NOT NULL DEFAULT 0 COMMENT '累计购票单数',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -64,11 +65,12 @@ CREATE TABLE undo_log (
     KEY ix_log_created (log_created)
 ) ENGINE=InnoDB COMMENT='Seata AT mode undo_log table';
 
--- 预置 3 个体验用户 (统一密码: Ticket@2026)
-INSERT INTO user_account (id, username, password_hash, nickname, phone, vip_level, points_balance, total_orders) VALUES
-(1001, 'zhaolan', 'Ticket@2026', '赵岚 · 黑钻观演家', '138****0336', 'BLACK_DIAMOND', 2680, 5),
-(1002, 'linfeng', 'Ticket@2026', '林峰 · 金卡乐迷', '139****8821', 'GOLD', 920, 2),
-(1003, 'suwan',   'Ticket@2026', '苏晚 · 影迷达人', '137****5519', 'NORMAL', 300, 1);
+-- 预置账号：1 个架构运维专员账号 (admin / Admin@2026) + 3 个普通购票用户 (统一密码: Ticket@2026，首次登录自动升级 BCrypt 哈希)
+INSERT INTO user_account (id, username, password_hash, nickname, phone, vip_level, role, points_balance, total_orders) VALUES
+(1000, 'admin',   'Admin@2026',  '系统架构师',       '188****0001', 'BLACK_DIAMOND', 'ADMIN', 9999, 0),
+(1001, 'zhaolan', 'Ticket@2026', '赵岚 · 黑钻观演家', '138****0336', 'BLACK_DIAMOND', 'USER',  2680, 5),
+(1002, 'linfeng', 'Ticket@2026', '林峰 · 金卡乐迷',   '139****8821', 'GOLD',          'USER',  920,  2),
+(1003, 'suwan',   'Ticket@2026', '苏晚 · 影迷达人',   '137****5519', 'NORMAL',        'USER',  300,  1);
 
 INSERT INTO points_log (user_id, order_no, biz_type, points_delta, balance_after, remark) VALUES
 (1001, 'TK202610200001', 'ORDER_PAID_REWARD', 1280, 2680, '购票出票成功奖励积分 (1元=10积分)');

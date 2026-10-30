@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { api, readableMessage } from '../api'
-import { demoUsers, DEMO_PASSWORD, refreshAll, state, toast } from '../store'
+import { refreshAll, state, toast } from '../store'
 
 const THREADS = 20
 const running = ref(false)
@@ -26,15 +26,6 @@ async function run() {
   running.value = true
   result.value = null
   try {
-    const tokens: string[] = []
-    for (const u of demoUsers) {
-      const res = await api('/api/user/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ username: u.username, password: DEMO_PASSWORD })
-      }, '')
-      if (res.code === 200) tokens.push(res.data.accessToken)
-    }
-
     const t0 = performance.now()
     const responses = await Promise.all(
       Array.from({ length: THREADS }, (_, i) =>
@@ -44,9 +35,10 @@ async function run() {
             sessionId: state.sessionId,
             seatIds: [target.id],
             fastCloseDemo: true,
-            simulateSeataRollback: false
+            simulateSeataRollback: false,
+            stressSlot: i + 1
           })
-        }, tokens[i % tokens.length])
+        })
       )
     )
     const elapsed = Math.round(performance.now() - t0)
@@ -74,15 +66,15 @@ async function run() {
   <section class="card p-8 md:p-10">
     <div class="flex flex-col justify-between gap-6 md:flex-row md:items-end">
       <div class="max-w-xl">
-        <p class="eyebrow">压力测试</p>
+        <p class="eyebrow">并发防超卖演练 · ADMIN 专属</p>
         <h3 class="mt-2 text-xl font-semibold tracking-tight">并发抢同一个座位</h3>
         <p class="mt-2 text-sm leading-relaxed text-ink-soft">
-          {{ THREADS }} 个请求同时争抢一个座位。用户锁、座位联锁和数据库 CAS 三层防护，
-          应当保证只有一个请求成功，其余全部被拦截。
+          模拟 {{ THREADS }} 位不同购票用户同时争抢同一座位。Redisson 座位联锁与数据库乐观锁 CAS 协同防护，
+          确保仅 1 笔请求锁座成功，其余 19 笔即时拦截（15 秒后未付自动释放）。
         </p>
       </div>
       <button class="btn-ghost h-11 shrink-0 px-6" :disabled="running" @click="run">
-        {{ running ? '测试中…' : '开始测试' }}
+        {{ running ? '并发请求中…' : '发起 20 并发压测' }}
       </button>
     </div>
 
