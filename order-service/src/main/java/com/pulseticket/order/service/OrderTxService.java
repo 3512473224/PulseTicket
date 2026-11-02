@@ -10,6 +10,7 @@ import com.pulseticket.order.entity.TicketOrder;
 import com.pulseticket.order.mapper.TicketOrderMapper;
 import io.seata.core.context.RootContext;
 import io.seata.spring.annotation.GlobalTransactional;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,6 +34,7 @@ import java.util.List;
  *    必须显式判断 !lockRes.isSuccess() 并抛出异常，否则 Seata 不会触发回滚！
  */
 @Service
+@RequiredArgsConstructor
 public class OrderTxService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderTxService.class);
@@ -44,11 +46,6 @@ public class OrderTxService {
 
     @Value("${pulseticket.fault.after-seat-lock:false}")
     private boolean globalFaultSwitch;
-
-    public OrderTxService(TicketOrderMapper ticketOrderMapper, ShowSeatClient showSeatClient) {
-        this.ticketOrderMapper = ticketOrderMapper;
-        this.showSeatClient = showSeatClient;
-    }
 
     @GlobalTransactional(name = "pulseticket-create-order-at-tx", rollbackFor = Exception.class)
     @Transactional(rollbackFor = Exception.class)

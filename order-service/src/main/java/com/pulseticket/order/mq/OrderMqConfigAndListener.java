@@ -9,6 +9,7 @@ import com.pulseticket.order.mapper.TicketOrderMapper;
 import com.pulseticket.order.service.SeataAuditService;
 import com.rabbitmq.client.Channel;
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.*;
@@ -37,6 +38,7 @@ import java.util.UUID;
  * 3. 关单消费执行 WHERE status = 'UNPAID' 的 CAS 乐观更新，彻底解决 14:59 付款与 15:00 关单的竞态冲突！
  */
 @Configuration
+@RequiredArgsConstructor
 public class OrderMqConfigAndListener {
 
     private static final Logger log = LoggerFactory.getLogger(OrderMqConfigAndListener.class);
@@ -60,18 +62,6 @@ public class OrderMqConfigAndListener {
     private final ShowSeatClient showSeatClient;
     private final SeataAuditService seataAuditService;
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    public OrderMqConfigAndListener(
-            RabbitTemplate rabbitTemplate,
-            TicketOrderMapper ticketOrderMapper,
-            ShowSeatClient showSeatClient,
-            SeataAuditService seataAuditService
-    ) {
-        this.rabbitTemplate = rabbitTemplate;
-        this.ticketOrderMapper = ticketOrderMapper;
-        this.showSeatClient = showSeatClient;
-        this.seataAuditService = seataAuditService;
-    }
 
     @PostConstruct
     public void initPublisherCallbacks() {

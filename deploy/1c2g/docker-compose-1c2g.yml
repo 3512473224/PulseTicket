@@ -1,0 +1,85 @@
+services:
+  pulseticket-mysql:
+    image: mysql:8.0
+    container_name: pulseticket-mysql
+    cpu_shares: 512
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --performance_schema=OFF
+      - --skip-log-bin
+      - --mysqlx=OFF
+      - --innodb_buffer_pool_size=32M
+      - --innodb_log_buffer_size=4M
+      - --max_connections=50
+      - --table_open_cache=120
+      - --host_cache_size=0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+      - ../sql/init_databases.sql:/docker-entrypoint-initdb.d/init_databases.sql:ro
+    mem_limit: 240m
+    restart: unless-stopped
+
+  pulseticket-redis:
+    image: redis:7-alpine
+    container_name: pulseticket-redis
+    cpu_shares: 512
+    command: redis-server --maxmemory 24mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    ports:
+      - "127.0.0.1:6379:6379"
+    mem_limit: 40m
+    restart: unless-stopped
+
+  pulseticket-rabbitmq:
+    image: rabbitmq:3.13-alpine
+    container_name: pulseticket-rabbitmq
+    cpu_shares: 512
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none"
+    ports:
+      - "127.0.0.1:5672:5672"
+    mem_limit: 135m
+    restart: unless-stopped
+
+  pulseticket-nacos:
+    image: nacos/nacos-server:v2.1.0-slim
+    container_name: pulseticket-nacos
+    cpu_shares: 512
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      JVM_XMS: 96m
+      JVM_XMX: 140m
+      JVM_XMN: 48m
+      JVM_MS: 48m
+      JVM_MMS: 88m
+    ports:
+      - "127.0.0.1:8848:8848"
+      - "127.0.0.1:9848:9848"
+    mem_limit: 270m
+    restart: unless-stopped
+
+  pulseticket-seata:
+    image: seataio/seata-server:2.0.0
+    container_name: pulseticket-seata
+    cpu_shares: 512
+    environment:
+      SEATA_IP: 127.0.0.1
+      SEATA_PORT: 8091
+      STORE_MODE: file
+      JVM_XMS: 64m
+      JVM_XMX: 112m
+      JVM_XMN: 32m
+    ports:
+      - "127.0.0.1:7091:7091"
+      - "127.0.0.1:8091:8091"
+    mem_limit: 210m
+    restart: unless-stopped

@@ -4,6 +4,7 @@ import com.pulseticket.order.entity.MqEventLog;
 import com.pulseticket.order.entity.SeataTxAudit;
 import com.pulseticket.order.mapper.MqEventLogMapper;
 import com.pulseticket.order.mapper.SeataTxAuditMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,15 +12,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 
 @Service
+@RequiredArgsConstructor
 public class SeataAuditService {
 
     private final SeataTxAuditMapper seataTxAuditMapper;
     private final MqEventLogMapper mqEventLogMapper;
-
-    public SeataAuditService(SeataTxAuditMapper seataTxAuditMapper, MqEventLogMapper mqEventLogMapper) {
-        this.seataTxAuditMapper = seataTxAuditMapper;
-        this.mqEventLogMapper = mqEventLogMapper;
-    }
 
     /**
      * 使用 REQUIRES_NEW 独立事务记录 Seata AT 全局事务审计轨迹：

@@ -41,27 +41,48 @@ def main():
     print("🚀 PulseTicket Spring Cloud Alibaba E2E Microservice & RBAC Verification Suite")
     print("=" * 78)
 
-    # 1. Registration, BCrypt Login, RBAC Isolation & Gateway /internal/** Block
-    print("\n[Test 1] Registration + BCrypt JWT Auth + RBAC Isolation + /internal/** Block")
+    # 1. Registration (Required Real Phone), BCrypt Login, RBAC Isolation & Gateway /internal/** Block
+    print("\n[Test 1] Required Real Phone Registration + BCrypt JWT Auth + RBAC Isolation")
     rand_user = f"buyer_{random.randint(10000, 99999)}"
+    _, reg_missing_phone = http_request(
+        "POST",
+        "/api/user/auth/register",
+        {"username": rand_user, "password": "User@2026", "nickname": "无手机号测试"},
+    )
+    assert_true(
+        reg_missing_phone.get("code") != 200,
+        f"Registration without phone rejected as required: {reg_missing_phone.get('message')}",
+    )
+
     status, reg_res = http_request(
         "POST",
         "/api/user/auth/register",
         {"username": rand_user, "password": "User@2026", "nickname": "新注册观众", "phone": "13912345678"},
     )
     assert_true(
-        status == 200 and reg_res.get("code") == 200 and reg_res["data"]["user"]["role"] == "USER",
-        f"New user registered with BCrypt & role=USER: {rand_user} (welcome points={reg_res['data']['user']['pointsBalance']})",
+        status == 200
+        and reg_res.get("code") == 200
+        and reg_res["data"]["user"]["role"] == "USER"
+        and reg_res["data"]["user"]["phone"] == "13912345678",
+        f"New user registered with real unmasked phone={reg_res['data']['user']['phone']} & role=USER: {rand_user}",
     )
 
     status, login_res = http_request("POST", "/api/user/auth/login", {"username": "zhaolan", "password": "Ticket@2026"})
-    assert_true(status == 200 and login_res.get("code") == 200, f"Customer login succeeded for zhaolan (role={login_res['data']['user']['role']})")
+    assert_true(
+        status == 200
+        and login_res.get("code") == 200
+        and "*" not in login_res["data"]["user"]["phone"],
+        f"Customer login succeeded for zhaolan (real phone={login_res['data']['user']['phone']}, role={login_res['data']['user']['role']})",
+    )
     token_user = login_res["data"]["accessToken"]
 
     status, admin_res = http_request("POST", "/api/user/auth/login", {"username": "admin", "password": "Admin@2026"})
     assert_true(
-        status == 200 and admin_res.get("code") == 200 and admin_res["data"]["user"]["role"] == "ADMIN",
-        f"Ops Admin login succeeded for admin (role={admin_res['data']['user']['role']})",
+        status == 200
+        and admin_res.get("code") == 200
+        and admin_res["data"]["user"]["role"] == "ADMIN"
+        and "*" not in admin_res["data"]["user"]["phone"],
+        f"Ops Admin login succeeded for admin (real phone={admin_res['data']['user']['phone']}, role={admin_res['data']['user']['role']})",
     )
     token_admin = admin_res["data"]["accessToken"]
 
@@ -74,11 +95,42 @@ def main():
         f"role={profile_res['data']['threadLocalRole']}, traceId={profile_res['data']['traceId']}",
     )
 
-    # Verify normal USER cannot access ADMIN telemetry or cache eviction
-    _, forbid_telemetry = http_request("GET", "/api/order/telemetry", token=token_user)
+    # Verify normal USER cannot access ADMIN telemetry, sales, or multi-database panels
+    for admin_ep in (
+        "/api/order/telemetry",
+        "/api/order/admin/sales",
+        "/api/order/admin/db-overview",
+        "/api/show/admin/analytics",
+        "/api/show/admin/db-overview",
+        "/api/user/admin/db-overview",
+    ):
+        _, forbid_res = http_request("GET", admin_ep, token=token_user)
+        assert_true(
+            forbid_res.get("code") == 403,
+            f"RBAC blocked normal USER from {admin_ep} (code={forbid_res.get('code')})",
+        )
+
+    # Verify ADMIN can access Sales Analytics & All 3 Microservice Database Overviews
+    _, show_sales = http_request("GET", "/api/show/admin/analytics", token=token_admin)
+    _, order_sales = http_request("GET", "/api/order/admin/sales", token=token_admin)
+    _, user_db = http_request("GET", "/api/user/admin/db-overview", token=token_admin)
+    _, show_db = http_request("GET", "/api/show/admin/db-overview", token=token_admin)
+    _, order_db = http_request("GET", "/api/order/admin/db-overview", token=token_admin)
     assert_true(
-        forbid_telemetry.get("code") == 403,
-        f"RBAC blocked normal USER from /api/order/telemetry (code={forbid_telemetry.get('code')})",
+        show_sales.get("code") == 200
+        and order_sales.get("code") == 200
+        and len(show_sales["data"]["showRanking"]) >= 4,
+        f"ADMIN Sales Panel ready: soldBoxOffice=¥{show_sales['data']['summary']['soldBoxOffice']}, "
+        f"paidOrders={order_sales['data']['summary']['paidOrders']}",
+    )
+    assert_true(
+        user_db.get("code") == 200
+        and show_db.get("code") == 200
+        and order_db.get("code") == 200
+        and len(show_db["data"]["seatInventory"]) == 240,
+        f"ADMIN 3-DB Explorer ready: ticket_user({len(user_db['data']['userAccounts'])} users), "
+        f"ticket_show({len(show_db['data']['seatInventory'])} seats), "
+        f"ticket_order({len(order_db['data']['ticketOrders'])} orders)",
     )
 
     status_internal, _ = http_request(

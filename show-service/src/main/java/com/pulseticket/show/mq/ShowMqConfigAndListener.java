@@ -4,6 +4,7 @@ import com.pulseticket.feign.dto.OrderClosedEventDTO;
 import com.pulseticket.feign.dto.OrderPaidEventDTO;
 import com.pulseticket.show.service.ShowCacheAndSeatService;
 import com.rabbitmq.client.Channel;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.*;
@@ -16,6 +17,7 @@ import org.springframework.context.annotation.Configuration;
 import java.io.IOException;
 
 @Configuration
+@RequiredArgsConstructor
 public class ShowMqConfigAndListener {
 
     private static final Logger log = LoggerFactory.getLogger(ShowMqConfigAndListener.class);
@@ -28,10 +30,6 @@ public class ShowMqConfigAndListener {
     public static final String ROUTING_ORDER_CLOSED = "order.closed.release";
 
     private final ShowCacheAndSeatService showService;
-
-    public ShowMqConfigAndListener(ShowCacheAndSeatService showService) {
-        this.showService = showService;
-    }
 
     @Bean
     public MessageConverter jacksonMessageConverter() {

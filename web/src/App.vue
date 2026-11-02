@@ -8,6 +8,8 @@ import AuthView from './views/AuthView.vue'
 import VerifyTicketView from './views/VerifyTicketView.vue'
 import TheaterView from './views/TheaterView.vue'
 import OrdersView from './views/OrdersView.vue'
+import SalesView from './views/SalesView.vue'
+import DatabaseView from './views/DatabaseView.vue'
 import TelemetryView from './views/TelemetryView.vue'
 import { isAdmin, refreshAll, restoreSession, state } from './store'
 import { remainingSeconds } from './utils'
@@ -78,7 +80,9 @@ onUnmounted(() => timer && clearInterval(timer))
       >
         <TheaterView v-if="state.tab === 'theater'" />
         <OrdersView v-else-if="state.tab === 'orders'" />
-        <TelemetryView v-else-if="isAdmin" />
+        <SalesView v-else-if="state.tab === 'sales' && isAdmin" />
+        <DatabaseView v-else-if="state.tab === 'database' && isAdmin" />
+        <TelemetryView v-else-if="state.tab === 'telemetry' && isAdmin" />
         <TheaterView v-else />
       </Transition>
     </main>

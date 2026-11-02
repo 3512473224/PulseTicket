@@ -18,7 +18,7 @@ CREATE TABLE user_account (
     username VARCHAR(64) NOT NULL UNIQUE COMMENT '登录用户名',
     password_hash VARCHAR(128) NOT NULL COMMENT '密码哈希',
     nickname VARCHAR(64) NOT NULL COMMENT '用户昵称',
-    phone VARCHAR(32) NOT NULL COMMENT '脱敏手机号',
+    phone VARCHAR(32) NOT NULL COMMENT '真实手机号(必填)',
     vip_level VARCHAR(32) NOT NULL DEFAULT 'GOLD' COMMENT '会员等级: NORMAL / GOLD / BLACK_DIAMOND',
     role VARCHAR(16) NOT NULL DEFAULT 'USER' COMMENT '角色权限: USER(普通购票用户) / ADMIN(架构运维专员)',
     points_balance INT NOT NULL DEFAULT 0 COMMENT '当前可用积分余额',
@@ -67,10 +67,10 @@ CREATE TABLE undo_log (
 
 -- 预置账号：1 个架构运维专员账号 (admin / Admin@2026) + 3 个普通购票用户 (统一密码: Ticket@2026，首次登录自动升级 BCrypt 哈希)
 INSERT INTO user_account (id, username, password_hash, nickname, phone, vip_level, role, points_balance, total_orders) VALUES
-(1000, 'admin',   'Admin@2026',  '系统架构师',       '188****0001', 'BLACK_DIAMOND', 'ADMIN', 9999, 0),
-(1001, 'zhaolan', 'Ticket@2026', '赵岚 · 黑钻观演家', '138****0336', 'BLACK_DIAMOND', 'USER',  2680, 5),
-(1002, 'linfeng', 'Ticket@2026', '林峰 · 金卡乐迷',   '139****8821', 'GOLD',          'USER',  920,  2),
-(1003, 'suwan',   'Ticket@2026', '苏晚 · 影迷达人',   '137****5519', 'NORMAL',        'USER',  300,  1);
+(1000, 'admin',   'Admin@2026',  '系统架构师',       '18800000001', 'BLACK_DIAMOND', 'ADMIN', 9999, 0),
+(1001, 'zhaolan', 'Ticket@2026', '赵岚 · 黑钻观演家', '13820240336', 'BLACK_DIAMOND', 'USER',  2680, 5),
+(1002, 'linfeng', 'Ticket@2026', '林峰 · 金卡乐迷',   '13910868821', 'GOLD',          'USER',  920,  2),
+(1003, 'suwan',   'Ticket@2026', '苏晚 · 影迷达人',   '13760125519', 'NORMAL',        'USER',  300,  1);
 
 INSERT INTO points_log (user_id, order_no, biz_type, points_delta, balance_after, remark) VALUES
 (1001, 'TK202610200001', 'ORDER_PAID_REWARD', 1280, 2680, '购票出票成功奖励积分 (1元=10积分)');
@@ -345,19 +345,44 @@ CREATE TABLE undo_log (
     KEY ix_log_created (log_created)
 ) ENGINE=InnoDB COMMENT='Seata AT mode undo_log table';
 
--- 预置 1 条历史已出票订单与审计轨迹
+-- 预置历史已出票订单与审计轨迹（与 seat_inventory 预置已售席位 100% 严格对齐）
 INSERT INTO ticket_order (
     id, order_no, user_id, username, show_id, show_title, venue_name,
     session_id, session_title, start_time, seat_ids_json, seat_labels_json,
     seat_count, total_amount, status, delay_seconds, seata_xid, ticket_code,
     expire_at, paid_at
-) VALUES (
+) VALUES
+(
     1, 'TK202610200001', 1001, 'zhaolan', 1,
     '「星际回响 · PulseLive」2026 全息交响电音巡演', '梅赛德斯-奔驰文化中心 · 主场馆',
     101, '11月15日 周六 19:30 首演黄金场', '2026-11-15 19:30:00',
-    '[4,5]', '["1排04座","1排05座"]', 2, 2560.00, 'PAID', 900,
+    '[4,5]', '["内场至尊VIP区 1排04座","内场至尊VIP区 1排05座"]', 2, 2560.00, 'PAID', 900,
     '127.0.0.1:8091:20261020888001', 'PT-8839-2026',
     '2026-10-20 20:15:00', '2026-10-20 20:01:12'
+),
+(
+    2, 'TK202610200002', 1002, 'linfeng', 1,
+    '「星际回响 · PulseLive」2026 全息交响电音巡演', '梅赛德斯-奔驰文化中心 · 主场馆',
+    101, '11月15日 周六 19:30 首演黄金场', '2026-11-15 19:30:00',
+    '[12,13]', '["内场至尊VIP区 2排04座","内场至尊VIP区 2排05座"]', 2, 2560.00, 'PAID', 900,
+    '127.0.0.1:8091:20261020888002', 'PT-6612-0002',
+    '2026-10-20 21:15:00', '2026-10-20 21:03:08'
+),
+(
+    3, 'TK202610210001', 1002, 'linfeng', 2,
+    '百老汇原版音乐剧《歌剧魅影 Phantom》20周年纪念版', '天桥艺术中心 · 大剧场',
+    201, '11月20日 周五 19:30 首演礼宾场', '2026-11-20 19:30:00',
+    '[100,101]', '["内场至尊VIP区 1排04座","内场至尊VIP区 1排05座"]', 2, 1960.00, 'PAID', 900,
+    '127.0.0.1:8091:20261021888001', 'PT-7520-0001',
+    '2026-10-21 19:45:00', '2026-10-21 19:32:45'
+),
+(
+    4, 'TK202610220001', 1003, 'suwan', 3,
+    '《星际穿越 Interstellar》十周年 IMAX GT 激光重映礼', '万象城 IMAX GT 巨幕影厅',
+    301, '11月08日 周六 20:00 IMAX GT 零点纪念场', '2026-11-08 20:00:00',
+    '[164,165]', '["中轴声场优选区 3排04座","中轴声场优选区 3排05座"]', 2, 278.00, 'PAID', 900,
+    '127.0.0.1:8091:20261022888001', 'PT-9104-0001',
+    '2026-10-22 22:15:00', '2026-10-22 22:04:19'
 );
 
 INSERT INTO seata_tx_audit (xid, order_no, user_id, session_id, seat_ids, tx_status, fault_injected, undo_summary, latency_ms) VALUES

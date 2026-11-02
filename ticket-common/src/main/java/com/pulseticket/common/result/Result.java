@@ -1,12 +1,17 @@
 package com.pulseticket.common.result;
 
 import com.pulseticket.common.context.UserContext;
+import lombok.Getter;
+import lombok.Setter;
+
 import java.io.Serializable;
 import java.util.UUID;
 
 /**
  * 统一微服务 REST / Feign 响应包装体
  */
+@Getter
+@Setter
 public class Result<T> implements Serializable {
 
     private int code;
@@ -57,45 +62,5 @@ public class Result<T> implements Serializable {
 
     public boolean isSuccess() {
         return this.code == 200;
-    }
-
-    public int getCode() {
-        return code;
-    }
-
-    public void setCode(int code) {
-        this.code = code;
-    }
-
-    public String getMessage() {
-        return message;
-    }
-
-    public void setMessage(String message) {
-        this.message = message;
-    }
-
-    public T getData() {
-        return data;
-    }
-
-    public void setData(T data) {
-        this.data = data;
-    }
-
-    public String getTraceId() {
-        return traceId;
-    }
-
-    public void setTraceId(String traceId) {
-        this.traceId = traceId;
-    }
-
-    public long getTimestamp() {
-        return timestamp;
-    }
-
-    public void setTimestamp(long timestamp) {
-        this.timestamp = timestamp;
     }
 }

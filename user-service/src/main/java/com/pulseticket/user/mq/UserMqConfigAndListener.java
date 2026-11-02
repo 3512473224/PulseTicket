@@ -3,6 +3,7 @@ package com.pulseticket.user.mq;
 import com.pulseticket.feign.dto.OrderPaidEventDTO;
 import com.pulseticket.user.service.UserPointsService;
 import com.rabbitmq.client.Channel;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.*;
@@ -15,6 +16,7 @@ import org.springframework.context.annotation.Configuration;
 import java.io.IOException;
 
 @Configuration
+@RequiredArgsConstructor
 public class UserMqConfigAndListener {
 
     private static final Logger log = LoggerFactory.getLogger(UserMqConfigAndListener.class);
@@ -23,10 +25,6 @@ public class UserMqConfigAndListener {
     public static final String QUEUE_USER_PAID_REWARD = "ticket.user.paid.queue";
 
     private final UserPointsService userPointsService;
-
-    public UserMqConfigAndListener(UserPointsService userPointsService) {
-        this.userPointsService = userPointsService;
-    }
 
     @Bean
     public MessageConverter jacksonMessageConverter() {

@@ -7,6 +7,7 @@ import com.pulseticket.user.entity.UserMessage;
 import com.pulseticket.user.mapper.PointsLogMapper;
 import com.pulseticket.user.mapper.UserAccountMapper;
 import com.pulseticket.user.mapper.UserMessageMapper;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -16,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 
 @Service
+@RequiredArgsConstructor
 public class UserPointsService {
 
     private static final Logger log = LoggerFactory.getLogger(UserPointsService.class);
@@ -23,16 +25,6 @@ public class UserPointsService {
     private final UserAccountMapper userAccountMapper;
     private final PointsLogMapper pointsLogMapper;
     private final UserMessageMapper userMessageMapper;
-
-    public UserPointsService(
-            UserAccountMapper userAccountMapper,
-            PointsLogMapper pointsLogMapper,
-            UserMessageMapper userMessageMapper
-    ) {
-        this.userAccountMapper = userAccountMapper;
-        this.pointsLogMapper = pointsLogMapper;
-        this.userMessageMapper = userMessageMapper;
-    }
 
     /**
      * 消费 RabbitMQ 订单支付成功消息：发放观演积分 + 签发电子票站内信

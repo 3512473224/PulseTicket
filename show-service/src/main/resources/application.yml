@@ -9,6 +9,11 @@ spring:
       - optional:nacos:shared-jdbc.yaml
       - optional:nacos:shared-redis.yaml
       - optional:nacos:shared-mq.yaml
+      - optional:nacos:shared-oss.yaml
+  servlet:
+    multipart:
+      max-file-size: 15MB
+      max-request-size: 15MB
   cloud:
     nacos:
       server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}

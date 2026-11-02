@@ -70,6 +70,14 @@ pulseticket:
   jwt:
     secret: {JWT_SECRET}
 """,
+    "shared-oss.yaml": f"""# Nacos 共享阿里云 OSS (ticket-ppday 华北2·北京) 配置
+pulseticket:
+  oss:
+    endpoint: {env_map.get("OSS_ENDPOINT", "oss-cn-beijing.aliyuncs.com")}
+    bucket: {env_map.get("OSS_BUCKET", "ticket-ppday")}
+    access-key-id: {env_map.get("OSS_ACCESS_KEY_ID", "")}
+    access-key-secret: {env_map.get("OSS_ACCESS_KEY_SECRET", "")}
+""",
 }
 
 

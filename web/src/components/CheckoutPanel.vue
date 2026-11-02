@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { X } from 'lucide-vue-next'
+import { Smartphone, X } from 'lucide-vue-next'
 import ToggleRow from './ToggleRow.vue'
 import type { SeatItem, ShowSession } from '../types'
 import { money, zones } from '../utils'
@@ -10,6 +10,7 @@ const props = defineProps<{
   session?: ShowSession
   submitting: boolean
   isAdmin?: boolean
+  userPhone?: string
 }>()
 const emit = defineEmits<{ (e: 'remove', seat: SeatItem): void; (e: 'submit'): void }>()
 const fastClose = defineModel<boolean>('fastClose', { default: true })
@@ -63,6 +64,15 @@ const holdWindowText = computed(() => (props.isAdmin && fastClose.value ? '15 �
           </div>
         </li>
       </TransitionGroup>
+    </div>
+
+    <!-- Real phone number displayed on checkout panel -->
+    <div v-if="userPhone" class="mt-5 flex items-center justify-between rounded-2xl bg-paper px-3.5 py-2.5 text-xs">
+      <span class="flex items-center gap-1.5 text-ink-soft">
+        <Smartphone class="h-3.5 w-3.5 text-ink-mute" />
+        出票实名手机
+      </span>
+      <span class="font-mono font-medium text-ink tabular">{{ userPhone }}</span>
     </div>
 
     <!-- Dedicated Chaos & Timeout Drills: Strictly visible to ADMIN only -->

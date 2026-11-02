@@ -14,6 +14,7 @@ import com.pulseticket.order.mapper.MqEventLogMapper;
 import com.pulseticket.order.mapper.SeataTxAuditMapper;
 import com.pulseticket.order.mapper.TicketOrderMapper;
 import com.pulseticket.order.mq.OrderMqConfigAndListener;
+import lombok.RequiredArgsConstructor;
 import org.redisson.RedissonMultiLock;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
@@ -21,8 +22,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -42,10 +46,13 @@ import java.util.concurrent.TimeUnit;
  *   ⑤ 在 finally 中安全释放分布式锁
  */
 @Service
+@RequiredArgsConstructor
 public class OrderFacade {
 
     private static final Logger log = LoggerFactory.getLogger(OrderFacade.class);
     private static final DateTimeFormatter NO_FMT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final RedissonClient redissonClient;
     private final OrderTxService orderTxService;
@@ -55,27 +62,8 @@ public class OrderFacade {
     private final SeataAuditService seataAuditService;
     private final ShowSeatClient showSeatClient;
     private final RabbitTemplate rabbitTemplate;
+    private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    public OrderFacade(
-            RedissonClient redissonClient,
-            OrderTxService orderTxService,
-            TicketOrderMapper ticketOrderMapper,
-            SeataTxAuditMapper seataTxAuditMapper,
-            MqEventLogMapper mqEventLogMapper,
-            SeataAuditService seataAuditService,
-            ShowSeatClient showSeatClient,
-            RabbitTemplate rabbitTemplate
-    ) {
-        this.redissonClient = redissonClient;
-        this.orderTxService = orderTxService;
-        this.ticketOrderMapper = ticketOrderMapper;
-        this.seataTxAuditMapper = seataTxAuditMapper;
-        this.mqEventLogMapper = mqEventLogMapper;
-        this.seataAuditService = seataAuditService;
-        this.showSeatClient = showSeatClient;
-        this.rabbitTemplate = rabbitTemplate;
-    }
 
     public TicketOrder createOrderWithThreeLayerDefense(
             Long userId,
@@ -372,6 +360,191 @@ public class OrderFacade {
         data.put("seataAudits", seataAudits);
         data.put("mqLogs", mqLogs);
         return data;
+    }
+
+    /**
+     * ADMIN 专属：全平台订单销量、转化率漏斗、购票会员榜与订单流水统计
+     */
+    public Map<String, Object> getAdminOrderSales() {
+        List<TicketOrder> allOrders = ticketOrderMapper.selectList(
+                new LambdaQueryWrapper<TicketOrder>().orderByDesc(TicketOrder::getId)
+        );
+
+        int totalOrders = allOrders.size();
+        int paidOrders = 0;
+        int paidTickets = 0;
+        int unpaidOrders = 0;
+        int closedOrders = 0;
+        int timeoutClosedOrders = 0;
+        int userCancelledOrders = 0;
+
+        BigDecimal paidRevenue = BigDecimal.ZERO;
+        BigDecimal unpaidAmount = BigDecimal.ZERO;
+        BigDecimal closedAmount = BigDecimal.ZERO;
+
+        Map<String, Map<String, Object>> dailyMap = new TreeMap<>();
+        Map<Long, Map<String, Object>> buyerMap = new LinkedHashMap<>();
+
+        for (TicketOrder o : allOrders) {
+            BigDecimal amt = o.getTotalAmount() != null ? o.getTotalAmount() : BigDecimal.ZERO;
+            int seats = o.getSeatCount() != null ? o.getSeatCount() : 0;
+            String dayKey = (o.getPaidAt() != null ? o.getPaidAt() : o.getCreatedAt()) != null
+                    ? (o.getPaidAt() != null ? o.getPaidAt() : o.getCreatedAt()).format(DAY_FMT)
+                    : "2026-10-30";
+
+            Map<String, Object> dayBucket = dailyMap.computeIfAbsent(dayKey, d -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("date", d);
+                m.put("paidRevenue", BigDecimal.ZERO);
+                m.put("paidOrders", 0);
+                m.put("paidTickets", 0);
+                m.put("totalOrders", 0);
+                return m;
+            });
+            dayBucket.put("totalOrders", (Integer) dayBucket.get("totalOrders") + 1);
+
+            if ("PAID".equals(o.getStatus())) {
+                paidOrders++;
+                paidTickets += seats;
+                paidRevenue = paidRevenue.add(amt);
+
+                dayBucket.put("paidRevenue", ((BigDecimal) dayBucket.get("paidRevenue")).add(amt));
+                dayBucket.put("paidOrders", (Integer) dayBucket.get("paidOrders") + 1);
+                dayBucket.put("paidTickets", (Integer) dayBucket.get("paidTickets") + seats);
+
+                Long uid = o.getUserId();
+                if (uid != null) {
+                    Map<String, Object> buyer = buyerMap.computeIfAbsent(uid, k -> {
+                        Map<String, Object> b = new LinkedHashMap<>();
+                        b.put("userId", uid);
+                        b.put("username", o.getUsername());
+                        b.put("paidOrders", 0);
+                        b.put("paidTickets", 0);
+                        b.put("totalSpent", BigDecimal.ZERO);
+                        b.put("lastPaidAt", o.getPaidAt() != null ? o.getPaidAt().format(DT_FMT) : null);
+                        return b;
+                    });
+                    buyer.put("paidOrders", (Integer) buyer.get("paidOrders") + 1);
+                    buyer.put("paidTickets", (Integer) buyer.get("paidTickets") + seats);
+                    buyer.put("totalSpent", ((BigDecimal) buyer.get("totalSpent")).add(amt));
+                }
+            } else if ("UNPAID".equals(o.getStatus())) {
+                unpaidOrders++;
+                unpaidAmount = unpaidAmount.add(amt);
+            } else {
+                closedOrders++;
+                closedAmount = closedAmount.add(amt);
+                if ("TIMEOUT_UNPAID".equals(o.getCloseReason())) {
+                    timeoutClosedOrders++;
+                } else if ("USER_CANCEL".equals(o.getCloseReason())) {
+                    userCancelledOrders++;
+                }
+            }
+        }
+
+        BigDecimal avgOrderValue = paidOrders > 0
+                ? paidRevenue.divide(BigDecimal.valueOf(paidOrders), 2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        BigDecimal conversionRate = totalOrders > 0
+                ? BigDecimal.valueOf(paidOrders * 100.0 / totalOrders).setScale(1, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+
+        List<Map<String, Object>> buyerLeaderboard = new ArrayList<>(buyerMap.values());
+        buyerLeaderboard.sort((a, b) -> ((BigDecimal) b.get("totalSpent")).compareTo((BigDecimal) a.get("totalSpent")));
+
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("totalOrders", totalOrders);
+        summary.put("paidOrders", paidOrders);
+        summary.put("paidTickets", paidTickets);
+        summary.put("paidRevenue", paidRevenue);
+        summary.put("avgOrderValue", avgOrderValue);
+        summary.put("unpaidOrders", unpaidOrders);
+        summary.put("unpaidAmount", unpaidAmount);
+        summary.put("closedOrders", closedOrders);
+        summary.put("closedAmount", closedAmount);
+        summary.put("timeoutClosedOrders", timeoutClosedOrders);
+        summary.put("userCancelledOrders", userCancelledOrders);
+        summary.put("conversionRate", conversionRate);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("summary", summary);
+        data.put("dailyTrend", new ArrayList<>(dailyMap.values()));
+        data.put("buyerLeaderboard", buyerLeaderboard);
+        data.put("recentOrders", allOrders.size() > 100 ? allOrders.subList(0, 100) : allOrders);
+        return data;
+    }
+
+    /**
+     * ADMIN 专属：读取 ticket_order 库全表元数据与实时数据明细
+     */
+    public Map<String, Object> getAdminDbOverview() {
+        List<TicketOrder> ticketOrders = ticketOrderMapper.selectList(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .orderByDesc(TicketOrder::getId)
+                        .last("LIMIT 200")
+        );
+        List<SeataTxAudit> seataTxAudits = seataTxAuditMapper.selectList(
+                new LambdaQueryWrapper<SeataTxAudit>()
+                        .orderByDesc(SeataTxAudit::getId)
+                        .last("LIMIT 200")
+        );
+        List<MqEventLog> mqEventLogs = mqEventLogMapper.selectList(
+                new LambdaQueryWrapper<MqEventLog>()
+                        .orderByDesc(MqEventLog::getId)
+                        .last("LIMIT 200")
+        );
+        List<Map<String, Object>> undoLogs = jdbcTemplate.queryForList(
+                """
+                SELECT branch_id AS branchId, xid, context, log_status AS logStatus,
+                       OCTET_LENGTH(rollback_info) AS payloadBytes,
+                       DATE_FORMAT(log_created, '%Y-%m-%d %H:%i:%s') AS logCreated
+                FROM undo_log
+                ORDER BY log_created DESC
+                LIMIT 50
+                """
+        );
+
+        List<Map<String, Object>> tablesMeta = queryTablesMeta(List.of(
+                "ticket_order", "seata_tx_audit", "mq_event_log", "undo_log"
+        ));
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("database", "ticket_order");
+        data.put("service", "order-service (:8203)");
+        data.put("tablesMeta", tablesMeta);
+        data.put("ticketOrders", ticketOrders);
+        data.put("seataTxAudits", seataTxAudits);
+        data.put("mqEventLogs", mqEventLogs);
+        data.put("undoLogs", undoLogs);
+        return data;
+    }
+
+    private List<Map<String, Object>> queryTablesMeta(List<String> tableNames) {
+        Map<String, Map<String, Object>> schemaInfo = new LinkedHashMap<>();
+        List<Map<String, Object>> rawMeta = jdbcTemplate.queryForList(
+                """
+                SELECT TABLE_NAME AS tableName, TABLE_COMMENT AS tableComment, ENGINE AS engine,
+                       IFNULL(DATA_LENGTH, 0) + IFNULL(INDEX_LENGTH, 0) AS totalBytes
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                """
+        );
+        for (Map<String, Object> m : rawMeta) {
+            schemaInfo.put(String.valueOf(m.get("tableName")), m);
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (String tbl : tableNames) {
+            Long exactCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + tbl, Long.class);
+            Map<String, Object> info = schemaInfo.getOrDefault(tbl, Map.of());
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("tableName", tbl);
+            item.put("tableComment", info.getOrDefault("tableComment", ""));
+            item.put("engine", info.getOrDefault("engine", "InnoDB"));
+            item.put("rowCount", exactCount != null ? exactCount : 0L);
+            item.put("totalBytes", info.getOrDefault("totalBytes", 0L));
+            result.add(item);
+        }
+        return result;
     }
 
     private <T> List<T> parseList(String json, TypeReference<List<T>> typeRef) {

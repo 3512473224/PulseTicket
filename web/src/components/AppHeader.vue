@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Bell, ChevronDown, LogOut, ShieldCheck, Ticket } from 'lucide-vue-next'
-import { isAdmin, loadOrders, loadProfile, loadTelemetry, logout, state } from '../store'
+import {
+  isAdmin,
+  loadAdminDatabases,
+  loadAdminSales,
+  loadOrders,
+  loadProfile,
+  loadTelemetry,
+  logout,
+  state
+} from '../store'
 import { money } from '../utils'
 import type { Tab } from '../types'
 
@@ -14,7 +23,11 @@ const nav = computed<{ key: Tab; label: string }[]>(() => {
     { key: 'orders', label: '我的订单' }
   ]
   if (isAdmin.value) {
-    base.push({ key: 'telemetry', label: '架构观测' })
+    base.push(
+      { key: 'sales', label: '票房销量' },
+      { key: 'database', label: '数据库总览' },
+      { key: 'telemetry', label: '架构观测' }
+    )
   }
   return base
 })
@@ -23,6 +36,7 @@ const unpaid = computed(() => state.orders.filter(o => o.status === 'UNPAID').le
 const unread = computed(() => state.messages.filter(m => !m.isRead).length)
 
 const vipLabelMap: Record<string, string> = {
+  BLACK_DIAMOND: '黑钻会员',
   DIAMOND: '黑钻会员',
   GOLD: '金卡会员',
   NORMAL: '观演会员'
@@ -47,6 +61,8 @@ function go(tab: Tab) {
   menuOpen.value = false
   state.tab = tab
   if (tab === 'orders') loadOrders()
+  if (tab === 'sales' && isAdmin.value) loadAdminSales()
+  if (tab === 'database' && isAdmin.value) loadAdminDatabases()
   if (tab === 'telemetry' && isAdmin.value) Promise.all([loadTelemetry(), loadProfile()])
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -67,7 +83,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 <template>
   <header class="sticky top-0 z-30 border-b border-line bg-paper/85 backdrop-blur-md">
     <div class="mx-auto flex h-16 max-w-[1200px] items-center justify-between px-6">
-      <div class="flex items-center gap-10">
+      <div class="flex items-center gap-8">
         <button class="flex items-center gap-2.5" @click="go('theater')">
           <span class="grid h-8 w-8 place-items-center rounded-[10px] bg-ink">
             <Ticket class="h-4 w-4 text-paper" :stroke-width="2" />
@@ -75,10 +91,10 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
           <span class="text-[17px] font-semibold tracking-tight">PulseTicket</span>
           <span
             v-if="isAdmin"
-            class="ml-1 hidden items-center gap-1 rounded-full bg-brick-soft px-2.5 py-0.5 text-[11px] font-medium text-brick sm:inline-flex"
+            class="ml-1 hidden items-center gap-1 rounded-full bg-brick-soft px-2.5 py-0.5 text-[11px] font-medium text-brick lg:inline-flex"
           >
             <ShieldCheck class="h-3 w-3" />
-            运维演练模式
+            ADMIN 控制台
           </span>
         </button>
 
@@ -86,7 +102,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
           <button
             v-for="item in nav"
             :key="item.key"
-            class="relative flex items-center gap-2 rounded-full px-4 py-2 text-sm transition"
+            class="relative flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm transition"
             :class="state.tab === item.key ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'"
             @click="go(item.key)"
           >
@@ -115,7 +131,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
           <span v-if="unread" class="absolute right-2 top-2 h-2 w-2 rounded-full bg-brick ring-2 ring-paper" />
         </button>
 
-        <div ref="menuRef" class="relative ml-1">
+        <div ref="menuRef" class="relative ml-0.5">
           <button
             class="flex items-center gap-2 rounded-full py-1 pl-1 pr-3 transition hover:bg-ink/[0.06]"
             @click="menuOpen = !menuOpen"
@@ -150,25 +166,37 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
                     {{ roleBadgeText }}
                   </span>
                 </div>
-                <p class="mt-1 font-mono text-xs text-ink-mute">@{{ state.user.username }} · {{ state.user.phone }}</p>
+                <p class="mt-1 font-mono text-xs text-ink-mute tabular">@{{ state.user.username }} · {{ state.user.phone }}</p>
               </div>
 
-              <div class="mt-1.5 space-y-0.5">
+              <div class="mt-1.5 space-y-0.5 whitespace-nowrap">
                 <button
                   class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
                   @click="go('orders')"
                 >
-                  <span>我的订单票夹</span>
+                  <span>我的订单</span>
                   <span v-if="unpaid" class="text-xs font-medium text-brick tabular">{{ unpaid }} 待付</span>
                 </button>
-                <button
-                  v-if="isAdmin"
-                  class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
-                  @click="go('telemetry')"
-                >
-                  <span>架构观测面板</span>
-                  <span class="font-mono text-[11px] text-ink-mute">ADMIN</span>
-                </button>
+                <template v-if="isAdmin">
+                  <button
+                    class="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
+                    @click="go('sales')"
+                  >
+                    票房销量
+                  </button>
+                  <button
+                    class="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
+                    @click="go('database')"
+                  >
+                    数据库总览
+                  </button>
+                  <button
+                    class="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-paper hover:text-ink"
+                    @click="go('telemetry')"
+                  >
+                    架构观测
+                  </button>
+                </template>
               </div>
 
               <div class="my-1.5 border-t border-line" />
@@ -187,11 +215,11 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
     </div>
 
     <!-- Mobile navigation -->
-    <nav class="flex items-center gap-1 border-t border-line px-4 py-2 md:hidden">
+    <nav class="flex items-center gap-1 overflow-x-auto border-t border-line px-4 py-2 md:hidden">
       <button
         v-for="item in nav"
         :key="item.key"
-        class="flex flex-1 items-center justify-center gap-1.5 rounded-full py-1.5 text-xs transition"
+        class="flex shrink-0 items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition"
         :class="state.tab === item.key ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft'"
         @click="go(item.key)"
       >

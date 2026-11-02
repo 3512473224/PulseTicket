@@ -7,6 +7,8 @@ import com.pulseticket.common.result.Result;
 import com.pulseticket.order.entity.TicketOrder;
 import com.pulseticket.order.mapper.TicketOrderMapper;
 import com.pulseticket.order.service.OrderFacade;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.Inet4Address;
@@ -21,63 +23,20 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/order")
+@RequiredArgsConstructor
 public class OrderController {
 
     private final OrderFacade orderFacade;
     private final TicketOrderMapper ticketOrderMapper;
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    public OrderController(OrderFacade orderFacade, TicketOrderMapper ticketOrderMapper) {
-        this.orderFacade = orderFacade;
-        this.ticketOrderMapper = ticketOrderMapper;
-    }
-
+    @Data
     public static class CreateOrderRequest {
         private Long sessionId;
         private List<Long> seatIds;
         private Boolean fastCloseDemo;
         private Boolean simulateSeataRollback;
         private Integer stressSlot;
-
-        public Long getSessionId() {
-            return sessionId;
-        }
-
-        public void setSessionId(Long sessionId) {
-            this.sessionId = sessionId;
-        }
-
-        public List<Long> getSeatIds() {
-            return seatIds;
-        }
-
-        public void setSeatIds(List<Long> seatIds) {
-            this.seatIds = seatIds;
-        }
-
-        public Boolean getFastCloseDemo() {
-            return fastCloseDemo;
-        }
-
-        public void setFastCloseDemo(Boolean fastCloseDemo) {
-            this.fastCloseDemo = fastCloseDemo;
-        }
-
-        public Boolean getSimulateSeataRollback() {
-            return simulateSeataRollback;
-        }
-
-        public void setSimulateSeataRollback(Boolean simulateSeataRollback) {
-            this.simulateSeataRollback = simulateSeataRollback;
-        }
-
-        public Integer getStressSlot() {
-            return stressSlot;
-        }
-
-        public void setStressSlot(Integer stressSlot) {
-            this.stressSlot = stressSlot;
-        }
     }
 
     /**
@@ -181,6 +140,22 @@ public class OrderController {
             throw new BizException(403, "仅限架构运维专员查看底层事务与消息审计日志");
         }
         return Result.ok(orderFacade.getArchitectureTelemetry());
+    }
+
+    @GetMapping("/admin/sales")
+    public Result<Map<String, Object>> getAdminSales() {
+        if (!UserContext.isAdmin()) {
+            throw new BizException(403, "仅限架构运维专员查看全平台票房销量面板");
+        }
+        return Result.ok(orderFacade.getAdminOrderSales());
+    }
+
+    @GetMapping("/admin/db-overview")
+    public Result<Map<String, Object>> getAdminDbOverview() {
+        if (!UserContext.isAdmin()) {
+            throw new BizException(403, "仅限架构运维专员查看订单与事务审计数据库");
+        }
+        return Result.ok(orderFacade.getAdminDbOverview());
     }
 
     private String detectLanIpv4() {

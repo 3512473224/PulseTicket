@@ -3,14 +3,19 @@ import { api, getToken, readableMessage, setToken, setUnauthorizedHandler } from
 import type {
   CatalogItem,
   MqLog,
+  OrderDbOverview,
+  OrderSalesAnalytics,
   PointsLog,
   SeataAudit,
   SeatItem,
+  ShowDbOverview,
   ShowInfo,
+  ShowSalesAnalytics,
   ShowSession,
   Tab,
   TicketOrder,
   Toast,
+  UserDbOverview,
   UserMessage,
   UserVO
 } from './types'
@@ -38,6 +43,13 @@ export const state = reactive({
   orders: [] as TicketOrder[],
   seataAudits: [] as SeataAudit[],
   mqLogs: [] as MqLog[],
+
+  // ADMIN dedicated Sales & Multi-DB panels
+  showAnalytics: null as ShowSalesAnalytics | null,
+  orderSales: null as OrderSalesAnalytics | null,
+  userDb: null as UserDbOverview | null,
+  showDb: null as ShowDbOverview | null,
+  orderDb: null as OrderDbOverview | null,
 
   ticket: null as TicketOrder | null,
   messagesOpen: false,
@@ -71,6 +83,11 @@ function resetUserSession() {
   state.orders = []
   state.seataAudits = []
   state.mqLogs = []
+  state.showAnalytics = null
+  state.orderSales = null
+  state.userDb = null
+  state.showDb = null
+  state.orderDb = null
   state.selected = []
   state.ticket = null
   state.messagesOpen = false
@@ -102,7 +119,9 @@ export async function restoreSession() {
   if (ok) {
     await loadCatalogAndDefaultShow()
     await loadOrders()
-    if (isAdmin.value) await loadTelemetry()
+    if (isAdmin.value) {
+      await Promise.all([loadTelemetry(), loadAdminSales(), loadAdminDatabases()])
+    }
   } else {
     resetUserSession()
   }
@@ -131,7 +150,9 @@ export async function login(username: string, password: string): Promise<{ ok: b
     loadCatalogAndDefaultShow(),
     loadProfile(),
     loadOrders(),
-    res.data.user.role === 'ADMIN' ? loadTelemetry() : Promise.resolve()
+    res.data.user.role === 'ADMIN'
+      ? Promise.all([loadTelemetry(), loadAdminSales(), loadAdminDatabases()])
+      : Promise.resolve()
   ])
   toast('success', `欢迎回来，${res.data.user.nickname}`)
   return { ok: true }
@@ -140,8 +161,8 @@ export async function login(username: string, password: string): Promise<{ ok: b
 export async function register(payload: {
   username: string
   password: string
+  phone: string
   nickname?: string
-  phone?: string
 }): Promise<{ ok: boolean; message?: string }> {
   const res = await api(
     '/api/user/auth/register',
@@ -161,7 +182,23 @@ export async function register(payload: {
   state.tab = 'theater'
 
   await Promise.all([loadCatalogAndDefaultShow(), loadProfile(), loadOrders()])
-  toast('success', '注册成功，已自动登录', '已为您发放 100 新人观演积分')
+  toast('success', '注册成功，已自动登录', `实名手机 ${res.data.user.phone} · 已发放 100 新人观演积分`)
+  return { ok: true }
+}
+
+export async function updateUserPhone(phone: string): Promise<{ ok: boolean; message?: string }> {
+  const res = await api<{ user: UserVO }>('/api/user/profile/phone', {
+    method: 'POST',
+    body: JSON.stringify({ phone })
+  })
+  if (res.code !== 200 || !res.data?.user) {
+    return { ok: false, message: res.message || '手机号更新失败' }
+  }
+  state.user = res.data.user
+  if (isAdmin.value) {
+    loadAdminDatabases()
+  }
+  toast('success', '手机号已更新', `当前实名绑定手机：${res.data.user.phone}`)
   return { ok: true }
 }
 
@@ -202,7 +239,7 @@ export async function markAllMessagesRead() {
 /* ---------------- catalog & seats ---------------- */
 
 export async function loadCatalog() {
-  const res = await api<CatalogItem[]>('/api/show/public/list', {}, '')
+  const res = await api<CatalogItem[]>(`/api/show/public/list?_t=${Date.now()}`, {}, '')
   if (res.code === 200) state.catalog = res.data || []
 }
 
@@ -259,7 +296,7 @@ export async function probePenetration() {
   )
 }
 
-/* ---------------- orders & telemetry ---------------- */
+/* ---------------- orders, sales & databases ---------------- */
 
 export async function loadOrders() {
   if (!state.user) return
@@ -275,13 +312,40 @@ export async function loadTelemetry() {
   state.mqLogs = res.data.mqLogs || []
 }
 
+export async function loadAdminSales() {
+  if (!isAdmin.value) return
+  const [showRes, orderRes, userRes] = await Promise.all([
+    api<ShowSalesAnalytics>('/api/show/admin/analytics'),
+    api<OrderSalesAnalytics>('/api/order/admin/sales'),
+    api<UserDbOverview>('/api/user/admin/db-overview')
+  ])
+  if (showRes.code === 200 && showRes.data) state.showAnalytics = showRes.data
+  if (orderRes.code === 200 && orderRes.data) state.orderSales = orderRes.data
+  if (userRes.code === 200 && userRes.data) state.userDb = userRes.data
+}
+
+export async function loadAdminDatabases() {
+  if (!isAdmin.value) return
+  const [userRes, showRes, orderRes] = await Promise.all([
+    api<UserDbOverview>('/api/user/admin/db-overview'),
+    api<ShowDbOverview>('/api/show/admin/db-overview'),
+    api<OrderDbOverview>('/api/order/admin/db-overview')
+  ])
+  if (userRes.code === 200 && userRes.data) state.userDb = userRes.data
+  if (showRes.code === 200 && showRes.data) state.showDb = showRes.data
+  if (orderRes.code === 200 && orderRes.data) state.orderDb = orderRes.data
+}
+
 export async function refreshAll() {
+  await loadCatalog()
   if (!state.user) return
   await Promise.all([
     loadSeats(),
     loadOrders(),
     loadProfile(),
-    isAdmin.value ? loadTelemetry() : Promise.resolve()
+    isAdmin.value
+      ? Promise.all([loadTelemetry(), loadAdminSales(), loadAdminDatabases()])
+      : Promise.resolve()
   ])
 }
 

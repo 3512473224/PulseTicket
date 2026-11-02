@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Eye, EyeOff, ShieldCheck, Ticket, UserCheck } from 'lucide-vue-next'
+import { Eye, EyeOff, ShieldCheck, Smartphone, Ticket, UserCheck } from 'lucide-vue-next'
 import { login, register } from '../store'
 
 const mode = ref<'login' | 'register'>('login')
@@ -17,12 +17,29 @@ function switchMode(next: 'login' | 'register') {
   errorMsg.value = ''
 }
 
+function sanitizePhoneInput() {
+  phone.value = phone.value.replace(/\D/g, '').slice(0, 11)
+}
+
 async function handleSubmit() {
   errorMsg.value = ''
   if (!username.value.trim() || !password.value.trim()) {
     errorMsg.value = '请输入用户名与登录密码'
     return
   }
+
+  if (mode.value === 'register') {
+    const cleanPhone = phone.value.trim()
+    if (!cleanPhone) {
+      errorMsg.value = '手机号为必填项，请输入您的 11 位真实手机号'
+      return
+    }
+    if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+      errorMsg.value = '请输入正确的 11 位中国大陆手机号'
+      return
+    }
+  }
+
   submitting.value = true
   try {
     const res =
@@ -31,8 +48,8 @@ async function handleSubmit() {
         : await register({
             username: username.value.trim(),
             password: password.value.trim(),
-            nickname: nickname.value.trim(),
-            phone: phone.value.trim()
+            phone: phone.value.trim(),
+            nickname: nickname.value.trim()
           })
     if (!res.ok) {
       errorMsg.value = res.message || '请求未成功，请重试'
@@ -75,10 +92,10 @@ async function quickLogin(user: string, pwd: string) {
       <div class="text-center">
         <p class="eyebrow">Account Access</p>
         <h1 class="mt-2.5 text-[28px] font-semibold tracking-tight">
-          {{ mode === 'login' ? '欢迎回到现场' : '创建观演账号' }}
+          {{ mode === 'login' ? '欢迎回到现场' : '创建实名观演账号' }}
         </h1>
         <p class="mt-2 text-sm text-ink-soft">
-          {{ mode === 'login' ? '登录后即可在线选座、锁座购票与查看电子票夹' : '新会员即刻获赠 100 观演积分，支持全平台在线选座' }}
+          {{ mode === 'login' ? '登录后即可在线选座、锁座购票与查看电子票夹' : '绑定真实手机号开通实名票夹，即刻获赠 100 观演积分' }}
         </p>
       </div>
 
@@ -105,7 +122,9 @@ async function quickLogin(user: string, pwd: string) {
 
         <form class="mt-7 space-y-4" @submit.prevent="handleSubmit">
           <div>
-            <label class="block text-xs font-medium text-ink-soft">用户名</label>
+            <label class="block text-xs font-medium text-ink-soft">
+              用户名 <span v-if="mode === 'register'" class="text-brick">*</span>
+            </label>
             <input
               v-model="username"
               type="text"
@@ -115,30 +134,43 @@ async function quickLogin(user: string, pwd: string) {
             />
           </div>
 
-          <div v-if="mode === 'register'" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <template v-if="mode === 'register'">
+            <div>
+              <label class="flex items-center justify-between text-xs font-medium text-ink-soft">
+                <span>手机号 <span class="text-brick">*</span></span>
+                <span class="font-mono text-[11px] text-ink-mute">实名出票与主页展示</span>
+              </label>
+              <div class="relative mt-1.5">
+                <Smartphone class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-mute" />
+                <input
+                  v-model="phone"
+                  type="tel"
+                  inputmode="numeric"
+                  maxlength="11"
+                  required
+                  autocomplete="tel"
+                  placeholder="请输入 11 位真实中国大陆手机号"
+                  class="h-11 w-full rounded-2xl border border-line bg-paper/60 pl-10 pr-4 font-mono text-sm text-ink outline-none transition placeholder:font-sans placeholder:text-ink-mute focus:border-ink focus:bg-white tabular"
+                  @input="sanitizePhoneInput"
+                />
+              </div>
+            </div>
+
             <div>
               <label class="block text-xs font-medium text-ink-soft">昵称 <span class="text-ink-mute">(选填)</span></label>
               <input
                 v-model="nickname"
                 type="text"
-                placeholder="如：陈默"
+                placeholder="如：陈默（留空默认使用用户名）"
                 class="mt-1.5 h-11 w-full rounded-2xl border border-line bg-paper/60 px-4 text-sm text-ink outline-none transition placeholder:text-ink-mute focus:border-ink focus:bg-white"
               />
             </div>
-            <div>
-              <label class="block text-xs font-medium text-ink-soft">手机号 <span class="text-ink-mute">(选填)</span></label>
-              <input
-                v-model="phone"
-                type="tel"
-                maxlength="11"
-                placeholder="11 位手机号"
-                class="mt-1.5 h-11 w-full rounded-2xl border border-line bg-paper/60 px-4 text-sm text-ink outline-none transition placeholder:text-ink-mute focus:border-ink focus:bg-white"
-              />
-            </div>
-          </div>
+          </template>
 
           <div>
-            <label class="block text-xs font-medium text-ink-soft">登录密码</label>
+            <label class="block text-xs font-medium text-ink-soft">
+              登录密码 <span v-if="mode === 'register'" class="text-brick">*</span>
+            </label>
             <div class="relative mt-1.5">
               <input
                 v-model="password"
@@ -168,7 +200,7 @@ async function quickLogin(user: string, pwd: string) {
 
           <button type="submit" class="btn-primary !mt-6 h-12 w-full" :disabled="submitting">
             <template v-if="submitting">正在验证身份…</template>
-            <template v-else>{{ mode === 'login' ? '登录' : '注册并自动登录' }}</template>
+            <template v-else>{{ mode === 'login' ? '登录' : '完成实名注册并登录' }}</template>
           </button>
         </form>
 
@@ -197,7 +229,7 @@ async function quickLogin(user: string, pwd: string) {
             <span class="min-w-0">
               <span class="block text-sm font-medium text-ink">普通购票会员</span>
               <span class="mt-0.5 block text-[11px] leading-relaxed text-ink-soft">
-                zhaolan · 纯净商业选座购票与扫码电子票
+                zhaolan · 13820240336 · 纯净商业选座与扫码电子票
               </span>
             </span>
           </button>
@@ -214,7 +246,7 @@ async function quickLogin(user: string, pwd: string) {
             <span class="min-w-0">
               <span class="block text-sm font-medium text-ink">架构运维专员</span>
               <span class="mt-0.5 block text-[11px] leading-relaxed text-ink-soft">
-                admin · 开放并发压测、Seata 演练与系统观测
+                admin · 票房销量面板、三库数据看板与架构压测
               </span>
             </span>
           </button>
