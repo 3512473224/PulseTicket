@@ -58,6 +58,23 @@ public class OrderTxService {
             int delaySeconds,
             boolean simulateSeataRollback
     ) {
+        return executeCreateOrderGlobalTx(
+                orderNo, userId, username, sessionId, sortedSeatIds, delaySeconds, simulateSeataRollback, null
+        );
+    }
+
+    @GlobalTransactional(name = "pulseticket-create-order-at-tx", rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
+    public TicketOrder executeCreateOrderGlobalTx(
+            String orderNo,
+            Long userId,
+            String username,
+            Long sessionId,
+            List<Long> sortedSeatIds,
+            int delaySeconds,
+            boolean simulateSeataRollback,
+            String idempotencyKey
+    ) {
         String xid = RootContext.getXID();
         if (xid != null) {
             com.pulseticket.common.context.UserContext.setSeataXid(xid);
@@ -80,6 +97,7 @@ public class OrderTxService {
         // 2. 在 ticket_order 库插入待支付订单 (一阶段同样生成 undo_log 前后镜像)
         TicketOrder order = new TicketOrder();
         order.setOrderNo(orderNo);
+        order.setIdempotencyKey(idempotencyKey);
         order.setUserId(userId);
         order.setUsername(username);
         order.setShowId(seatVo.getShowId());

@@ -1,0 +1,239 @@
+from contextlib import asynccontextmanager
+import json
+from typing import Optional, Tuple
+import uvicorn
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from app.config import settings
+from app.graph.main_graph import multi_agent_manager as ticket_agent_manager
+from app.observability.tracer import agent_tracer
+from app.rag.hybrid_rag import hybrid_rag_engine
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    chunk_count = hybrid_rag_engine.load_and_index()
+    await ticket_agent_manager.startup()
+    print(
+        f"[PulseTicket Agent v2] 主 Graph + 3 子图已就绪 | "
+        f"知识分片={chunk_count} | DEV_MOCK={settings.DEV_MOCK}"
+    )
+    yield
+    await ticket_agent_manager.shutdown()
+
+
+app = FastAPI(
+    title="PulseTicket Multi-Agent Service",
+    description="基于 LangGraph (主图意图路由 + 知识问答/选座购票/订单售后 3 子图 + Interrupt 确认门控 + Hybrid RAG) 的票务智能体服务",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class RagSearchRequest(BaseModel):
+    query: str = Field(..., description="用户的规则提问，例如：上海那场演出临时去不了能退票吗？")
+    top_k: int = Field(3, ge=1, le=6)
+
+
+class ChatRequest(BaseModel):
+    threadId: str = Field(..., min_length=1, max_length=128, description="多轮会话线程 ID（用于 SQLite Checkpointer 持久化）")
+    message: str = Field(..., min_length=1, max_length=2500, description="用户在对话框输入的自然语言消息")
+
+
+class ConfirmRequest(BaseModel):
+    threadId: str = Field(..., min_length=1, max_length=128, description="需要恢复的挂起会话线程 ID")
+    confirmed: bool = Field(..., description="true=点击【确认锁座/确认取消】，false=点击【暂不执行】")
+
+
+def _require_auth_headers(
+    x_user_id: Optional[str],
+    x_username: Optional[str],
+    x_user_role: Optional[str],
+) -> Tuple[int, str, str]:
+    """严格校验网关透传的登录身份头，彻底移除默认 1 号用户兜底。"""
+    raw_id = (x_user_id or "").strip()
+    if not raw_id.isdigit() or int(raw_id) <= 0:
+        raise HTTPException(status_code=401, detail="缺少有效身份头 X-User-Id，请先登录并通过网关访问")
+    clean_name = (x_username or "").strip()
+    if not clean_name:
+        raise HTTPException(status_code=401, detail="缺少有效身份头 X-Username，请先登录并通过网关访问")
+    clean_role = (x_user_role or "USER").strip().upper() or "USER"
+    return int(raw_id), clean_name, clean_role
+
+
+def _format_sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.get("/api/agent/health")
+async def health():
+    return {
+        "code": 200,
+        "service": "ticket-agent",
+        "version": "2.0.0",
+        "architecture": "MainGraph(Router+Guard) + 3 Subgraphs(Knowledge/Purchase/Order)",
+        "port": settings.AGENT_PORT,
+        "llmModel": settings.LLM_MODEL,
+        "devMock": settings.DEV_MOCK,
+        "indexedKnowledgeChunks": len(hybrid_rag_engine._chunks),
+    }
+
+
+@app.post("/api/agent/rag/search")
+async def test_hybrid_rag(req: RagSearchRequest):
+    """单独测试 Hybrid RAG (jieba BM25 + 512d 稠密向量 + RRF 重排) 的检索明细与打分"""
+    hits = await hybrid_rag_engine.search(req.query, top_k=req.top_k)
+    return {
+        "code": 200,
+        "query": req.query,
+        "hits": hits,
+    }
+
+
+@app.post("/api/agent/chat")
+async def chat_endpoint(
+    req: ChatRequest,
+    x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
+    x_username: Optional[str] = Header(default=None, alias="X-Username"),
+    x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
+):
+    uid, uname, role = _require_auth_headers(x_user_id, x_username, x_user_role)
+    try:
+        data = await ticket_agent_manager.chat(
+            thread_id=req.threadId,
+            user_message=req.message,
+            user_id=uid,
+            username=uname,
+            user_role=role,
+        )
+        return {"code": 200, "data": data}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agent/chat/stream")
+async def chat_stream_endpoint(
+    req: ChatRequest,
+    x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
+    x_username: Optional[str] = Header(default=None, alias="X-Username"),
+    x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
+):
+    """SSE 实时流式对话入口（推送 route / step / token / interrupt / done 事件）"""
+    uid, uname, role = _require_auth_headers(x_user_id, x_username, x_user_role)
+
+    async def event_gen():
+        try:
+            async for item in ticket_agent_manager.stream_chat(
+                thread_id=req.threadId,
+                user_message=req.message,
+                user_id=uid,
+                username=uname,
+                user_role=role,
+            ):
+                yield _format_sse(item["event"], item["data"])
+        except PermissionError as e:
+            yield _format_sse("error", {"code": 403, "message": str(e)})
+        except Exception as e:
+            yield _format_sse("error", {"code": 500, "message": str(e)})
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/agent/confirm")
+async def confirm_endpoint(
+    req: ConfirmRequest,
+    x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
+    x_username: Optional[str] = Header(default=None, alias="X-Username"),
+    x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
+):
+    uid, uname, role = _require_auth_headers(x_user_id, x_username, x_user_role)
+    try:
+        data = await ticket_agent_manager.confirm(
+            thread_id=req.threadId,
+            confirmed=req.confirmed,
+            user_id=uid,
+            username=uname,
+            user_role=role,
+        )
+        return {"code": 200, "data": data}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/agent/confirm/stream")
+async def confirm_stream_endpoint(
+    req: ConfirmRequest,
+    x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
+    x_username: Optional[str] = Header(default=None, alias="X-Username"),
+    x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
+):
+    uid, uname, role = _require_auth_headers(x_user_id, x_username, x_user_role)
+
+    async def event_gen():
+        try:
+            async for item in ticket_agent_manager.stream_confirm(
+                thread_id=req.threadId,
+                confirmed=req.confirmed,
+                user_id=uid,
+                username=uname,
+                user_role=role,
+            ):
+                yield _format_sse(item["event"], item["data"])
+        except PermissionError as e:
+            yield _format_sse("error", {"code": 403, "message": str(e)})
+        except ValueError as e:
+            yield _format_sse("error", {"code": 400, "message": str(e)})
+        except Exception as e:
+            yield _format_sse("error", {"code": 500, "message": str(e)})
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/agent/traces")
+async def get_agent_traces(
+    limit: int = Query(default=25, ge=1, le=100),
+    x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
+    x_username: Optional[str] = Header(default=None, alias="X-Username"),
+    x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
+):
+    """ADMIN 专属：读取 Agent 主图路由、子图轨迹、引用条款与安全拦截审计日志"""
+    _, _, role = _require_auth_headers(x_user_id, x_username, x_user_role)
+    if role != "ADMIN":
+        raise HTTPException(status_code=403, detail="仅限架构运维专员 (ADMIN) 查看 Agent 编排审计轨迹")
+    data = await agent_tracer.list_recent_traces(limit=limit)
+    return {"code": 200, "data": data}
+
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=settings.AGENT_PORT, reload=True)

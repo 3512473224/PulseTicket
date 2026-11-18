@@ -21,6 +21,7 @@ public class TicketOrder {
     @TableId(type = IdType.AUTO)
     private Long id;
     private String orderNo;
+    private String idempotencyKey;
     private Long userId;
     private String username;
     private Long showId;

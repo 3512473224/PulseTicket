@@ -20,6 +20,8 @@ public class OrderSeedSyncInitializer {
 
     @PostConstruct
     public void syncHistoricalSeededOrders() {
+        ensureIdempotencySchema();
+
         String sql = """
                 INSERT IGNORE INTO ticket_order (
                     order_no, user_id, username, show_id, show_title, venue_name,
@@ -59,6 +61,40 @@ public class OrderSeedSyncInitializer {
 
         if (n1 + n2 + n3 > 0) {
             log.info("[OrderSeedSync] Backfilled {} historical seeded paid orders for box-office consistency", n1 + n2 + n3);
+        }
+    }
+
+    /**
+     * 为已有数据库幂等补齐 idempotency_key 字段与 (user_id, idempotency_key) 唯一索引
+     */
+    private void ensureIdempotencySchema() {
+        try {
+            Integer colCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                            + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ticket_order' AND COLUMN_NAME = 'idempotency_key'",
+                    Integer.class
+            );
+            if (colCount == null || colCount == 0) {
+                jdbcTemplate.execute(
+                        "ALTER TABLE ticket_order ADD COLUMN idempotency_key VARCHAR(128) DEFAULT NULL "
+                                + "COMMENT '外部请求幂等键(防网关/Agent超时重试重复下单)' AFTER order_no"
+                );
+                log.info("[OrderSeedSync] Added column idempotency_key to ticket_order");
+            }
+
+            Integer idxCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                            + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ticket_order' AND INDEX_NAME = 'uk_user_idempotency'",
+                    Integer.class
+            );
+            if (idxCount == null || idxCount == 0) {
+                jdbcTemplate.execute(
+                        "ALTER TABLE ticket_order ADD UNIQUE INDEX uk_user_idempotency (user_id, idempotency_key)"
+                );
+                log.info("[OrderSeedSync] Added unique index uk_user_idempotency on ticket_order");
+            }
+        } catch (Exception e) {
+            log.warn("[OrderSeedSync] Idempotency schema check warning: {}", e.getMessage());
         }
     }
 }

@@ -22,11 +22,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -73,6 +75,20 @@ public class OrderFacade {
             boolean fastCloseDemo,
             boolean simulateSeataRollback
     ) {
+        return createOrderWithThreeLayerDefense(
+                userId, username, sessionId, rawSeatIds, fastCloseDemo, simulateSeataRollback, null
+        );
+    }
+
+    public TicketOrder createOrderWithThreeLayerDefense(
+            Long userId,
+            String username,
+            Long sessionId,
+            List<Long> rawSeatIds,
+            boolean fastCloseDemo,
+            boolean simulateSeataRollback,
+            String idempotencyKey
+    ) {
         if (userId == null) {
             throw new BizException(401, "请先登录后再选座购票");
         }
@@ -82,6 +98,8 @@ public class OrderFacade {
         if (rawSeatIds.size() > 6) {
             throw new BizException(400, "单笔订单最多支持选座 6 张");
         }
+
+        String normalizedIdemKey = normalizeIdempotencyKey(idempotencyKey);
 
         // 座位 ID 严格去重并升序排列（防止用户 A 选 [2,5] 与用户 B 选 [5,2] 产生环形等待死锁！）
         List<Long> sortedSeatIds = rawSeatIds.stream().distinct().sorted().toList();
@@ -105,6 +123,17 @@ public class OrderFacade {
                 + String.format("%04d", ThreadLocalRandom.current().nextInt(1000, 9999));
 
         try {
+            // 外部请求幂等校验（防网关 / Agent 超时重试导致重复创单或误报座位冲突）
+            if (normalizedIdemKey != null) {
+                TicketOrder existing = findExistingOrderByIdempotency(userId, normalizedIdemKey);
+                if (existing != null) {
+                    assertIdempotencyMatchesRequest(existing, sessionId, sortedSeatIds);
+                    log.info("[Idempotency Hit] userId={}, key={}, returning existing orderNo={}",
+                            userId, normalizedIdemKey, existing.getOrderNo());
+                    return existing;
+                }
+            }
+
             try {
                 // 最多等待 250ms，leaseTime 传 -1 保持看门狗续期
                 seatLocked = seatMultiLock.tryLock(250, -1, TimeUnit.MILLISECONDS);
@@ -125,7 +154,8 @@ public class OrderFacade {
                     sessionId,
                     sortedSeatIds,
                     delaySeconds,
-                    simulateSeataRollback
+                    simulateSeataRollback,
+                    normalizedIdemKey
             );
 
             long elapsed = System.currentTimeMillis() - t0;
@@ -188,6 +218,15 @@ public class OrderFacade {
                         "【Seata AT 二阶段反向补偿成功】show-service 一阶段已锁定座位 " + sortedSeatIds + " 并写 undo_log，捕获异常后利用 before image 自动回滚释放座位，订单表回滚无脏数据！",
                         elapsed
                 );
+            }
+            if (normalizedIdemKey != null && isDuplicateKeyException(ex)) {
+                TicketOrder existing = findExistingOrderByIdempotency(userId, normalizedIdemKey);
+                if (existing != null) {
+                    assertIdempotencyMatchesRequest(existing, sessionId, sortedSeatIds);
+                    log.info("[Idempotency Duplicate Fallback] userId={}, key={}, returning existing orderNo={}",
+                            userId, normalizedIdemKey, existing.getOrderNo());
+                    return existing;
+                }
             }
             Throwable cursor = ex;
             while (cursor != null) {
@@ -286,9 +325,12 @@ public class OrderFacade {
     }
 
     /**
-     * 用户主动取消未支付订单並立即归还座位
+     * 用户主动取消未支付订单并立即归还座位（拒绝吞掉 PAID / 超时关闭订单）
      */
     public TicketOrder cancelOrderManually(Long userId, String orderNo) {
+        if (userId == null) {
+            throw new BizException(401, "请先登录后再操作订单");
+        }
         TicketOrder order = ticketOrderMapper.selectOne(
                 new LambdaQueryWrapper<TicketOrder>()
                         .eq(TicketOrder::getOrderNo, orderNo)
@@ -297,8 +339,17 @@ public class OrderFacade {
         if (order == null) {
             throw new BizException(404, "订单不存在");
         }
+        if ("PAID".equals(order.getStatus())) {
+            throw new BizException(409, "该订单已完成支付出票，无法通过取消接口直接退票，请核实退票规则或联系人工客服");
+        }
+        if ("CLOSED".equals(order.getStatus())) {
+            if ("USER_CANCEL".equals(order.getCloseReason())) {
+                return order; // 幂等返回用户已取消订单
+            }
+            throw new BizException(409, "订单已超时关闭，座位已被系统释放，无需重复取消");
+        }
         if (!"UNPAID".equals(order.getStatus())) {
-            return order;
+            throw new BizException(409, "当前订单状态不允许取消: " + order.getStatus());
         }
 
         int closed = ticketOrderMapper.casCloseUnpaidOrder(orderNo, "USER_CANCEL");
@@ -321,8 +372,15 @@ public class OrderFacade {
                 showSeatClient.releaseSeats(releaseEvent);
             } catch (Exception ignored) {
             }
+            return ticketOrderMapper.selectById(order.getId());
         }
-        return ticketOrderMapper.selectById(order.getId());
+
+        // CAS 更新 0 行说明并发毫秒内状态已改变，回查真实状态避免假成功
+        TicketOrder latest = ticketOrderMapper.selectById(order.getId());
+        if (latest != null && "CLOSED".equals(latest.getStatus()) && "USER_CANCEL".equals(latest.getCloseReason())) {
+            return latest;
+        }
+        throw new BizException(409, "订单状态已变更，无法取消（当前状态: " + (latest != null ? latest.getStatus() : "UNKNOWN") + "）");
     }
 
     public List<TicketOrder> listUserOrders(Long userId) {
@@ -545,6 +603,54 @@ public class OrderFacade {
             result.add(item);
         }
         return result;
+    }
+
+    private String normalizeIdempotencyKey(String rawKey) {
+        if (rawKey == null) {
+            return null;
+        }
+        String trimmed = rawKey.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.length() > 128) {
+            throw new BizException(400, "Idempotency-Key 长度不能超过 128 个字符");
+        }
+        return trimmed;
+    }
+
+    private TicketOrder findExistingOrderByIdempotency(Long userId, String idempotencyKey) {
+        return ticketOrderMapper.selectOne(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .eq(TicketOrder::getUserId, userId)
+                        .eq(TicketOrder::getIdempotencyKey, idempotencyKey)
+                        .last("LIMIT 1")
+        );
+    }
+
+    private void assertIdempotencyMatchesRequest(TicketOrder existing, Long sessionId, List<Long> sortedSeatIds) {
+        if (!Objects.equals(existing.getSessionId(), sessionId)) {
+            throw new BizException(409, "幂等键冲突：同一 Idempotency-Key 不能用于不同场次");
+        }
+        List<Long> existingSeatIds = parseList(existing.getSeatIdsJson(), new TypeReference<List<Long>>() {})
+                .stream()
+                .distinct()
+                .sorted()
+                .toList();
+        if (!Objects.equals(existingSeatIds, sortedSeatIds)) {
+            throw new BizException(409, "幂等键冲突：同一 Idempotency-Key 不能用于不同座位组合");
+        }
+    }
+
+    private boolean isDuplicateKeyException(Throwable ex) {
+        Throwable cursor = ex;
+        while (cursor != null) {
+            if (cursor instanceof DuplicateKeyException || cursor instanceof SQLIntegrityConstraintViolationException) {
+                return true;
+            }
+            cursor = cursor.getCause();
+        }
+        return false;
     }
 
     private <T> List<T> parseList(String json, TypeReference<List<T>> typeRef) {

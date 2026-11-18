@@ -4,6 +4,7 @@ import AppHeader from './components/AppHeader.vue'
 import ToastHost from './components/ToastHost.vue'
 import TicketModal from './components/TicketModal.vue'
 import MessagesDrawer from './components/MessagesDrawer.vue'
+import AgentChatWidget from './components/AgentChatWidget.vue'
 import AuthView from './views/AuthView.vue'
 import VerifyTicketView from './views/VerifyTicketView.vue'
 import TheaterView from './views/TheaterView.vue'
@@ -98,5 +99,6 @@ onUnmounted(() => timer && clearInterval(timer))
     <ToastHost />
     <TicketModal />
     <MessagesDrawer />
+    <AgentChatWidget />
   </div>
 </template>

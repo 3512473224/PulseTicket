@@ -390,3 +390,82 @@ export interface OrderDbOverview {
   mqEventLogs: MqLog[]
   undoLogs: UndoLogRow[]
 }
+
+/* ---------------- AI Multi-Agent Chat & Observability Types ---------------- */
+
+export interface AgentToolStep {
+  agent?: string
+  tool: string
+  args?: Record<string, any>
+}
+
+export interface AgentConfirmationCard {
+  actionType: 'CREATE_ORDER' | 'CANCEL_ORDER'
+  toolName: string
+  toolCallId: string
+  idempotencyKey: string
+  title: string
+  isMock?: boolean
+  priceSource?: string
+  args: {
+    session_id?: number
+    seat_ids?: number[]
+    seat_labels?: string[]
+    show_title?: string
+    session_title?: string
+    venue_name?: string
+    total_amount?: number
+    order_no?: string
+    refund_reason?: string
+  }
+}
+
+export interface AgentChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  streaming?: boolean
+  liveStepLabel?: string
+  status?: 'COMPLETED' | 'INTERRUPTED' | 'BLOCKED' | 'ERROR'
+  intents?: string[]
+  subgraphs?: string[]
+  citations?: string[]
+  toolSteps?: AgentToolStep[]
+  confirmationCard?: AgentConfirmationCard | null
+  cardDecision?: 'PENDING' | 'SUBMITTING' | 'CONFIRMED' | 'REJECTED'
+  latencyMs?: number
+}
+
+export interface AgentTraceItem {
+  id: number
+  traceId: string
+  threadId: string
+  userId: number
+  username: string
+  endpoint: string
+  userMessage: string
+  intents: string[]
+  subgraphs: string[]
+  toolSteps: AgentToolStep[]
+  citations: string[]
+  guardBlocked: boolean
+  interrupted: boolean
+  writeExecuted: boolean
+  latencyMs: number
+  status: string
+  replyPreview: string
+  createdAt: string
+}
+
+export interface AgentTraceSummary {
+  totalRuns: number
+  guardBlockedCount: number
+  interruptedCount: number
+  writeExecutedCount: number
+  avgLatencyMs: number
+}
+
+export interface AgentTracesPayload {
+  summary: AgentTraceSummary
+  traces: AgentTraceItem[]
+}

@@ -43,6 +43,10 @@ spring:
           uri: lb://order-service
           predicates:
             - Path=/api/order/**
+        - id: agent-service-route
+          uri: ${AGENT_SERVICE_URI:http://127.0.0.1:8204}
+          predicates:
+            - Path=/api/agent/**
 
 management:
   endpoints:

@@ -1,0 +1,35 @@
+{
+  "evaluatedAt": "2026-11-18 14:51:43",
+  "totalCases": 40,
+  "indexedKnowledgeChunks": 14,
+  "elapsedMs": 508,
+  "intentRouting": {
+    "passed": 12,
+    "total": 12,
+    "accuracyPct": 100.0
+  },
+  "hybridRag": {
+    "hitAt1": 8,
+    "hitAt3": 8,
+    "total": 8,
+    "hitAt1Pct": 100.0,
+    "hitAt3Pct": 100.0
+  },
+  "outOfScopeRefusal": {
+    "passed": 6,
+    "total": 6,
+    "accuracyPct": 100.0
+  },
+  "tieredRefundMath": {
+    "passed": 6,
+    "total": 6,
+    "accuracyPct": 100.0
+  },
+  "securityGuard": {
+    "passed": 8,
+    "total": 8,
+    "blockRatePct": 100.0,
+    "unconfirmedWriteCount": 0
+  },
+  "failures": []
+}

@@ -276,6 +276,7 @@ USE ticket_order;
 CREATE TABLE ticket_order (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     order_no VARCHAR(64) NOT NULL UNIQUE COMMENT '全局唯一票务订单号',
+    idempotency_key VARCHAR(128) DEFAULT NULL COMMENT '外部请求幂等键(防网关/Agent超时重试重复下单)',
     user_id BIGINT NOT NULL COMMENT '下单用户ID',
     username VARCHAR(64) NOT NULL COMMENT '下单用户名',
     show_id BIGINT NOT NULL COMMENT '演出ID',
@@ -290,7 +291,7 @@ CREATE TABLE ticket_order (
     total_amount DECIMAL(10,2) NOT NULL COMMENT '订单应付总金额',
     status VARCHAR(24) NOT NULL DEFAULT 'UNPAID' COMMENT '状态: UNPAID / PAID / CLOSED',
     close_reason VARCHAR(64) DEFAULT NULL COMMENT '关单原因: TIMEOUT_UNPAID / USER_CANCEL',
-    delay_seconds INT NOT NULL DEFAULT 900 COMMENT '延迟关单秒数(默认900s=15min, 支持20s极速演示)',
+    delay_seconds INT NOT NULL DEFAULT 900 COMMENT '延迟关单秒数(默认900s=15min, 支持15s极速演示)',
     seata_xid VARCHAR(128) DEFAULT NULL COMMENT 'Seata AT 全局事务 XID',
     ticket_code VARCHAR(64) DEFAULT NULL COMMENT '支付出票后生成的电子核验码',
     expire_at DATETIME(3) NOT NULL COMMENT '锁座支付截止时间',
@@ -299,6 +300,7 @@ CREATE TABLE ticket_order (
     version INT NOT NULL DEFAULT 0 COMMENT 'CAS乐观锁版本号(防14:59付款与15:00关单竞态冲突)',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_user_idempotency (user_id, idempotency_key),
     KEY idx_user_status (user_id, status, created_at DESC),
     KEY idx_session_status (session_id, status)
 ) ENGINE=InnoDB COMMENT='演出选座订单主表';

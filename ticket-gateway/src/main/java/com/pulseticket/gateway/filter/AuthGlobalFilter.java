@@ -49,6 +49,8 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             "/api/user/auth/**",
             "/api/show/public/**",
             "/api/order/public/**",
+            "/api/agent/health",
+            "/api/agent/rag/**",
             "/actuator/**"
     );
 

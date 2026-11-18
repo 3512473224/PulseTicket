@@ -7,6 +7,7 @@ import { mqEventLabel, shortTime } from '../utils'
 const refreshing = ref(false)
 const expandedAudit = ref<number | null>(null)
 const expandedMq = ref<number | null>(null)
+const expandedAgent = ref<number | null>(null)
 
 async function refresh() {
   refreshing.value = true
@@ -36,7 +37,8 @@ const services = [
   { name: 'ticket-gateway', port: 8200 },
   { name: 'user-service', port: 8201 },
   { name: 'show-service', port: 8202 },
-  { name: 'order-service', port: 8203 }
+  { name: 'order-service', port: 8203 },
+  { name: 'ticket-agent', port: 8204 }
 ]
 </script>
 
@@ -152,6 +154,75 @@ const services = [
           <li v-if="!state.mqLogs.length" class="px-7 py-12 text-center text-sm text-ink-mute">暂无记录</li>
         </ul>
       </div>
+    </section>
+
+    <!-- AI Multi-Agent Trace Observability -->
+    <section class="card overflow-hidden">
+      <div class="flex flex-wrap items-center justify-between gap-4 border-b border-line px-7 py-5">
+        <div>
+          <h3 class="text-sm font-semibold">AI Multi-Agent 主子图路由与安全审计轨迹</h3>
+          <p class="mt-0.5 text-xs text-ink-mute">
+            agent_trace_log (:8204) · 记录意图拆解、子图调度、RAG 条款引用、注入拦截与人工确认耗时
+          </p>
+        </div>
+        <div v-if="state.agentTraceSummary" class="flex flex-wrap gap-5 text-xs tabular">
+          <span>总调用 <strong class="text-ink">{{ state.agentTraceSummary.totalRuns }}</strong></span>
+          <span>安全拦截 <strong class="text-brick">{{ state.agentTraceSummary.guardBlockedCount }}</strong></span>
+          <span>确认挂起 <strong class="text-gold">{{ state.agentTraceSummary.interruptedCount }}</strong></span>
+          <span>平均耗时 <strong class="text-ink">{{ state.agentTraceSummary.avgLatencyMs }}ms</strong></span>
+        </div>
+      </div>
+
+      <ul class="max-h-[380px] divide-y divide-line overflow-y-auto">
+        <li
+          v-for="t in state.agentTraces"
+          :key="t.id"
+          class="cursor-pointer px-7 py-4 transition hover:bg-paper/70"
+          @click="expandedAgent = expandedAgent === t.id ? null : t.id"
+        >
+          <div class="flex items-center justify-between gap-4">
+            <div class="flex min-w-0 items-center gap-2.5">
+              <span class="font-mono text-xs text-ink-mute">{{ t.traceId }}</span>
+              <span class="truncate text-sm font-medium text-ink">{{ t.userMessage }}</span>
+            </div>
+            <span class="flex shrink-0 items-center gap-3 text-xs">
+              <span class="text-ink-mute tabular">{{ t.latencyMs }}ms</span>
+              <span
+                class="rounded-full px-2 py-0.5 text-[11px] font-medium"
+                :class="
+                  t.guardBlocked
+                    ? 'bg-brick-soft text-brick'
+                    : t.interrupted
+                      ? 'bg-gold-soft text-gold'
+                      : 'bg-sage-soft text-sage'
+                "
+              >
+                {{ t.status }}
+              </span>
+              <ChevronDown
+                class="h-3.5 w-3.5 text-ink-mute transition-transform duration-200"
+                :class="expandedAgent === t.id ? 'rotate-180' : ''"
+              />
+            </span>
+          </div>
+          <p class="mt-1.5 truncate font-mono text-[11px] text-ink-mute">
+            用户 {{ t.username }} · 意图 [{{ t.intents.join(' → ') || 'guard' }}] · 子图 [{{ t.subgraphs.join(' → ') }}]
+            <template v-if="t.citations.length"> · 引用 {{ t.citations.join(', ') }}</template>
+          </p>
+          <div
+            v-if="expandedAgent === t.id"
+            class="mt-3 space-y-1.5 rounded-xl bg-paper px-3.5 py-2.5 text-xs leading-relaxed text-ink-soft"
+          >
+            <p><strong class="text-ink">回复摘要：</strong>{{ t.replyPreview || '—' }}</p>
+            <p class="font-mono text-[11px] text-ink-mute">
+              步骤明细：{{ t.toolSteps.map(s => `${s.agent || ''}:${s.tool}`).join(' → ') || '无工具调用' }}
+            </p>
+          </div>
+        </li>
+        <li v-if="!state.agentTraces.length" class="px-7 py-10 text-center text-sm text-ink-mute">
+          暂无 Agent 轨迹记录（启动 ticket-agent :8204 并在右下角对话后自动采集）
+        </li>
+      </ul>
     </section>
 
     <!-- points & context -->

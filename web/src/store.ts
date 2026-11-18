@@ -1,6 +1,9 @@
 import { computed, reactive, ref } from 'vue'
 import { api, getToken, readableMessage, setToken, setUnauthorizedHandler } from './api'
 import type {
+  AgentTraceItem,
+  AgentTraceSummary,
+  AgentTracesPayload,
   CatalogItem,
   MqLog,
   OrderDbOverview,
@@ -50,6 +53,8 @@ export const state = reactive({
   userDb: null as UserDbOverview | null,
   showDb: null as ShowDbOverview | null,
   orderDb: null as OrderDbOverview | null,
+  agentTraceSummary: null as AgentTraceSummary | null,
+  agentTraces: [] as AgentTraceItem[],
 
   ticket: null as TicketOrder | null,
   messagesOpen: false,
@@ -88,6 +93,8 @@ function resetUserSession() {
   state.userDb = null
   state.showDb = null
   state.orderDb = null
+  state.agentTraceSummary = null
+  state.agentTraces = []
   state.selected = []
   state.ticket = null
   state.messagesOpen = false
@@ -306,10 +313,18 @@ export async function loadOrders() {
 
 export async function loadTelemetry() {
   if (!isAdmin.value) return
-  const res = await api('/api/order/telemetry')
-  if (res.code !== 200) return
-  state.seataAudits = res.data.seataAudits || []
-  state.mqLogs = res.data.mqLogs || []
+  const [orderTel, agentTel] = await Promise.all([
+    api('/api/order/telemetry'),
+    api<AgentTracesPayload>('/api/agent/traces?limit=20')
+  ])
+  if (orderTel.code === 200 && orderTel.data) {
+    state.seataAudits = orderTel.data.seataAudits || []
+    state.mqLogs = orderTel.data.mqLogs || []
+  }
+  if (agentTel.code === 200 && agentTel.data) {
+    state.agentTraceSummary = agentTel.data.summary || null
+    state.agentTraces = agentTel.data.traces || []
+  }
 }
 
 export async function loadAdminSales() {

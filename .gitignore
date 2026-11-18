@@ -20,6 +20,13 @@ web/node_modules/
 web/dist/
 *.tsbuildinfo
 
+# Python & Agent
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+ticket-agent/data/*.sqlite*
+
 # IDE & OS
 .idea/
 *.iml

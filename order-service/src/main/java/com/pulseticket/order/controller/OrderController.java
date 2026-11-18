@@ -37,6 +37,7 @@ public class OrderController {
         private Boolean fastCloseDemo;
         private Boolean simulateSeataRollback;
         private Integer stressSlot;
+        private String idempotencyKey;
     }
 
     /**
@@ -82,8 +83,12 @@ public class OrderController {
     }
 
     @PostMapping("/create")
-    public Result<TicketOrder> createOrder(@RequestBody CreateOrderRequest req) {
-        Long userId = UserContext.getUserId();
+    public Result<TicketOrder> createOrder(
+            @RequestBody CreateOrderRequest req,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyHeader,
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String xIdempotencyHeader
+    ) {
+        Long userId = requireUserId();
         String username = UserContext.getUsername() != null ? UserContext.getUsername() : "user-" + userId;
 
         boolean isAdmin = UserContext.isAdmin();
@@ -91,10 +96,13 @@ public class OrderController {
         boolean fastClose = isAdmin && Boolean.TRUE.equals(req.getFastCloseDemo());
         boolean simulateRollback = isAdmin && Boolean.TRUE.equals(req.getSimulateSeataRollback());
 
+        String idempotencyKey = firstNonBlank(idempotencyHeader, xIdempotencyHeader, req.getIdempotencyKey());
+
         // 架构师并发压测虚拟买家槽位（模拟 20 个不同买家并发争抢同一座位）
         if (isAdmin && req.getStressSlot() != null && req.getStressSlot() > 0 && req.getStressSlot() <= 100) {
             userId = 9000L + req.getStressSlot();
             username = "sim_buyer_" + req.getStressSlot();
+            idempotencyKey = null;
         }
 
         TicketOrder order = orderFacade.createOrderWithThreeLayerDefense(
@@ -103,35 +111,56 @@ public class OrderController {
                 req.getSessionId(),
                 req.getSeatIds(),
                 fastClose,
-                simulateRollback
+                simulateRollback,
+                idempotencyKey
         );
         return Result.ok("锁座下单成功，请在倒计时结束前完成支付", order);
     }
 
     @PostMapping("/{orderNo}/pay")
     public Result<TicketOrder> payOrder(@PathVariable String orderNo) {
-        Long userId = UserContext.getUserId();
+        Long userId = requireUserId();
         TicketOrder paid = orderFacade.payOrder(userId, orderNo);
         return Result.ok("支付成功！电子票已签发", paid);
     }
 
     @PostMapping("/{orderNo}/cancel")
     public Result<TicketOrder> cancelOrder(@PathVariable String orderNo) {
-        Long userId = UserContext.getUserId();
+        Long userId = requireUserId();
         TicketOrder cancelled = orderFacade.cancelOrderManually(userId, orderNo);
         return Result.ok("订单已取消，锁定座位已释放", cancelled);
     }
 
     @GetMapping("/my")
     public Result<List<TicketOrder>> listMyOrders() {
-        Long userId = UserContext.getUserId();
+        Long userId = requireUserId();
         return Result.ok(orderFacade.listUserOrders(userId));
     }
 
     @GetMapping("/detail/{orderNo}")
     public Result<TicketOrder> getOrderDetail(@PathVariable String orderNo) {
-        Long userId = UserContext.getUserId();
+        Long userId = requireUserId();
         return Result.ok(orderFacade.getOrderByNo(userId, orderNo));
+    }
+
+    private Long requireUserId() {
+        Long userId = UserContext.getUserId();
+        if (userId == null) {
+            throw new BizException(401, "请先登录账号");
+        }
+        return userId;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String v : values) {
+            if (v != null && !v.trim().isEmpty()) {
+                return v.trim();
+            }
+        }
+        return null;
     }
 
     @GetMapping("/telemetry")

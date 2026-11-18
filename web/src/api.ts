@@ -50,9 +50,21 @@ export async function api<T = any>(
   try {
     const resp = await fetch(path, { ...options, headers })
     const text = await resp.text()
-    const parsed: ApiResult<T> = text
-      ? JSON.parse(text)
-      : { code: resp.status, message: resp.statusText, data: null as T }
+    let parsed: ApiResult<T>
+    if (!text) {
+      parsed = { code: resp.status, message: resp.statusText, data: null as T }
+    } else {
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        const statusCode = resp.status >= 400 ? resp.status : 502
+        return {
+          code: statusCode,
+          message: `网关服务暂不可用 (HTTP ${resp.status || 502})，请稍后重试`,
+          data: null as T
+        }
+      }
+    }
 
     if (
       (resp.status === 401 || parsed.code === 401) &&

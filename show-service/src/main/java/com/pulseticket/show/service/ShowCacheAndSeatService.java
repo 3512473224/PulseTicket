@@ -178,6 +178,78 @@ public class ShowCacheAndSeatService {
     }
 
     /**
+     * 服务端权威核价与余座实时校验（供 Agent 确认卡片与结算前调用，绝不采信前端/大模型传入金额）
+     */
+    public Map<String, Object> quoteSessionSeats(Long sessionId, List<Long> rawSeatIds) {
+        if (sessionId == null) {
+            throw new BizException(400, "场次编号不能为空");
+        }
+        if (rawSeatIds == null || rawSeatIds.isEmpty()) {
+            throw new BizException(400, "请至少选择 1 个座位");
+        }
+        List<Long> sortedSeatIds = rawSeatIds.stream().filter(Objects::nonNull).distinct().sorted().toList();
+        if (sortedSeatIds.isEmpty()) {
+            throw new BizException(400, "座位编号不能为空");
+        }
+        if (sortedSeatIds.size() > 6) {
+            throw new BizException(400, "单笔订单最多支持选座 6 张");
+        }
+
+        ShowSession session = showSessionMapper.selectById(sessionId);
+        if (session == null) {
+            throw new BizException(404, "演出场次不存在: " + sessionId);
+        }
+        ShowInfo show = showInfoMapper.selectById(session.getShowId());
+        if (show == null) {
+            throw new BizException(404, "所属演出不存在");
+        }
+        if ("OFF_SHELF".equalsIgnoreCase(show.getStatus())) {
+            throw new BizException(409, "该演出已下架归档，暂不支持购买");
+        }
+
+        List<SeatInventory> seats = seatInventoryMapper.selectList(
+                new LambdaQueryWrapper<SeatInventory>()
+                        .eq(SeatInventory::getSessionId, sessionId)
+                        .in(SeatInventory::getId, sortedSeatIds)
+                        .orderByAsc(SeatInventory::getId)
+        );
+        if (seats.size() != sortedSeatIds.size()) {
+            throw new BizException(400, "部分座位不存在或不属于场次 #" + sessionId);
+        }
+
+        List<String> unavailable = seats.stream()
+                .filter(s -> !"AVAILABLE".equals(s.getStatus()))
+                .map(s -> s.getSeatLabel() + "(" + s.getStatus() + ")")
+                .toList();
+        if (!unavailable.isEmpty()) {
+            throw new BizException(409, "所选座位已被锁定或售出，请重新选座: " + String.join("、", unavailable));
+        }
+
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        List<String> seatLabels = new ArrayList<>();
+        List<BigDecimal> unitPrices = new ArrayList<>();
+        for (SeatInventory seat : seats) {
+            totalAmount = totalAmount.add(seat.getPrice());
+            seatLabels.add(seat.getZoneName() + " " + seat.getSeatLabel());
+            unitPrices.add(seat.getPrice());
+        }
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("showId", show.getId());
+        res.put("showTitle", show.getTitle());
+        res.put("venueName", show.getVenueName());
+        res.put("sessionId", session.getId());
+        res.put("sessionTitle", session.getSessionTitle());
+        res.put("startTime", session.getStartTime() != null ? session.getStartTime().format(DT_FMT) : null);
+        res.put("seatIds", sortedSeatIds);
+        res.put("seatLabels", seatLabels);
+        res.put("unitPrices", unitPrices);
+        res.put("seatCount", sortedSeatIds.size());
+        res.put("totalAmount", totalAmount);
+        return res;
+    }
+
+    /**
      * 查询场次实时座位图
      */
     public Map<String, Object> getSessionSeatMap(Long sessionId) {
@@ -236,6 +308,7 @@ public class ShowCacheAndSeatService {
         showSessionMapper.syncSessionSeatCounts(dto.getSessionId());
 
         List<SeatInventory> lockedSeats = seatInventoryMapper.selectBatchIds(dto.getSeatIds());
+        lockedSeats.sort(Comparator.comparing(SeatInventory::getId));
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<String> labels = new ArrayList<>();
         for (SeatInventory seat : lockedSeats) {

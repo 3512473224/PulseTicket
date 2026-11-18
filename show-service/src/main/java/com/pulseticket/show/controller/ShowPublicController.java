@@ -6,6 +6,7 @@ import com.pulseticket.common.result.Result;
 import com.pulseticket.show.entity.ShowInfo;
 import com.pulseticket.show.service.AliyunOssService;
 import com.pulseticket.show.service.ShowCacheAndSeatService;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -21,6 +22,11 @@ public class ShowPublicController {
     private final ShowCacheAndSeatService showService;
     private final AliyunOssService aliyunOssService;
 
+    @Data
+    public static class SeatQuoteRequest {
+        private List<Long> seatIds;
+    }
+
     @GetMapping("/public/list")
     public Result<List<Map<String, Object>>> listShows(@RequestParam(required = false) String category) {
         return Result.ok(showService.listShows(category));
@@ -34,6 +40,14 @@ public class ShowPublicController {
     @GetMapping("/public/sessions/{sessionId}/seats")
     public Result<Map<String, Object>> getSessionSeats(@PathVariable Long sessionId) {
         return Result.ok(showService.getSessionSeatMap(sessionId));
+    }
+
+    @PostMapping("/public/sessions/{sessionId}/quote")
+    public Result<Map<String, Object>> quoteSessionSeats(
+            @PathVariable Long sessionId,
+            @RequestBody SeatQuoteRequest req
+    ) {
+        return Result.ok(showService.quoteSessionSeats(sessionId, req != null ? req.getSeatIds() : null));
     }
 
     @PostMapping("/cache/evict/{showId}")
