@@ -29,10 +29,11 @@ echo "===================================================="
 cd "$BASE_DIR/deploy/1c2g"
 docker compose -f docker-compose-1c2g.yml up -d
 
-echo "-> Waiting for Nacos (8848) & MySQL (3306) readiness..."
-for i in {1..45}; do
-    if curl -s http://127.0.0.1:8848/nacos/v1/console/health/readiness | grep -qi "ok"; then
-        echo "   [OK] Nacos is ready!"
+echo "-> Waiting for Nacos HTTP (8848), gRPC (9848) & MySQL (3306) readiness..."
+for i in {1..60}; do
+    if curl -s http://127.0.0.1:8848/nacos/v1/console/health/readiness | grep -qi "ok" && ss -tln | grep -q ":9848 "; then
+        sleep 3
+        echo "   [OK] Nacos HTTP + gRPC are ready!"
         break
     fi
     sleep 2
