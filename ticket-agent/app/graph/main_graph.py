@@ -16,6 +16,7 @@ from langgraph.types import Command, interrupt
 from app.config import settings
 from app.graph.guard_and_router import input_guard_node, intent_router_node
 from app.graph.state import MainGraphState, SubTaskResult, get_chat_llm
+from app.graph.thought_stream import ThoughtSession, emit_thought
 from app.graph.subgraphs import (
     build_knowledge_subgraph,
     build_order_subgraph,
@@ -261,6 +262,15 @@ async def confirm_action_node(state: MainGraphState) -> Dict[str, Any]:
     citations = list(state.get("citations") or [])
 
     if not confirmed:
+        emit_thought(
+            key="confirm-exec",
+            phase="confirm",
+            agent_label="确认门控",
+            title="用户已取消确认卡片 · 安全释放挂起态",
+            detail="未向 Java 订单服务发起任何锁座或变更请求",
+            badges=["已放弃"],
+            status="done",
+        )
         steps.append({
             "agent": "confirm_gate",
             "tool": "human_confirm_rejected",
@@ -279,6 +289,15 @@ async def confirm_action_node(state: MainGraphState) -> Dict[str, Any]:
             }],
         }
 
+    emit_thought(
+        key="confirm-exec",
+        phase="confirm",
+        agent_label="确认门控",
+        title="人工确认通过 · 正在携带幂等键请求 Java order-service…",
+        detail=f"Idempotency-Key: {idempotency_key}",
+        badges=["Seata AT", "Redisson"],
+        status="running",
+    )
     token = current_user_ctx.set({
         "user_id": state["user_id"],
         "username": state["username"],
@@ -292,6 +311,20 @@ async def confirm_action_node(state: MainGraphState) -> Dict[str, Any]:
         )
     finally:
         current_user_ctx.reset(token)
+
+    emit_thought(
+        key="confirm-exec",
+        phase="confirm",
+        agent_label="确认门控",
+        title=(
+            f"写操作提交成功 · 单号 {exec_res.get('orderNo')}"
+            if exec_res.get("success")
+            else "写操作未完成 · 已返回真实错误回执"
+        ),
+        detail=exec_res.get("message", ""),
+        badges=[str(exec_res.get("orderNo") or "FAILED")],
+        status="done" if exec_res.get("success") else "warn",
+    )
 
     steps.append({
         "agent": "confirm_gate",
@@ -527,6 +560,7 @@ class MultiAgentTicketManager:
         user_message: str,
         config: Dict[str, Any],
         t0: float,
+        thinking_steps: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         snapshot = await self.graph.aget_state(config)
         vals = snapshot.values if (snapshot and snapshot.values) else {}
@@ -579,6 +613,7 @@ class MultiAgentTicketManager:
             "subgraphs": subgraphs,
             "citations": citations,
             "toolSteps": tool_steps,
+            "thinkingSteps": list(thinking_steps or []),
             "confirmationCard": confirmation_card,
             "latencyMs": latency_ms,
         }
@@ -601,58 +636,71 @@ class MultiAgentTicketManager:
         prev_snap = await self.graph.aget_state(config)
         self._assert_thread_owner(prev_snap, user_info["user_id"])
 
-        # P0-6：挂起等待卡片确认时收到新消息
-        if prev_snap and prev_snap.next:
-            pending_card = _extract_interrupt_card(prev_snap)
-            if _is_explicit_cancel_intent(user_message):
-                await self.graph.ainvoke(Command(resume={"confirmed": False}), config=config)
-                if _is_pure_cancel_phrase(user_message):
-                    return await self._finalize_payload(
-                        trace_id=trace_id,
-                        thread_id=thread_id,
-                        user_info=user_info,
-                        endpoint="chat_cancel_pending",
-                        user_message=user_message,
-                        config=config,
-                        t0=t0,
+        with ThoughtSession(use_queue=False) as ts:
+            # P0-6：挂起等待卡片确认时收到新消息
+            if prev_snap and prev_snap.next:
+                pending_card = _extract_interrupt_card(prev_snap)
+                if _is_explicit_cancel_intent(user_message):
+                    await self.graph.ainvoke(Command(resume={"confirmed": False}), config=config)
+                    if _is_pure_cancel_phrase(user_message):
+                        return await self._finalize_payload(
+                            trace_id=trace_id,
+                            thread_id=thread_id,
+                            user_info=user_info,
+                            endpoint="chat_cancel_pending",
+                            user_message=user_message,
+                            config=config,
+                            t0=t0,
+                            thinking_steps=ts.steps,
+                        )
+                else:
+                    card_title = (pending_card or {}).get("title") or "待确认操作"
+                    emit_thought(
+                        key="pending-guard",
+                        phase="confirm",
+                        agent_label="确认门控",
+                        title=f"检测到未决【{card_title}】卡片",
+                        detail="阻止文本绕过卡片自动扣款，保持断点等待明确点击确认或放弃",
+                        badges=["Interrupt 保护"],
+                        status="warn",
                     )
-            else:
-                card_title = (pending_card or {}).get("title") or "待确认操作"
-                hold_reply = (
-                    f"您当前有一笔待处理的【{card_title}】卡片尚未确认。"
-                    "为保障座位与资金安全，请直接点击确认卡片上的【确认】或【暂不执行】按钮；"
-                    "若想放弃当前操作再咨询其他问题，请回复“放弃当前操作”。"
-                )
-                return {
-                    "traceId": trace_id,
-                    "threadId": thread_id,
-                    "status": "INTERRUPTED",
-                    "reply": hold_reply,
-                    "intents": [],
-                    "subgraphs": ["pending_resolver"],
-                    "citations": [],
-                    "toolSteps": [],
-                    "confirmationCard": pending_card,
-                    "latencyMs": int((time.perf_counter() - t0) * 1000),
-                }
+                    hold_reply = (
+                        f"您当前有一笔待处理的【{card_title}】卡片尚未确认。"
+                        "为保障座位与资金安全，请直接点击确认卡片上的【确认】或【暂不执行】按钮；"
+                        "若想放弃当前操作再咨询其他问题，请回复“放弃当前操作”。"
+                    )
+                    return {
+                        "traceId": trace_id,
+                        "threadId": thread_id,
+                        "status": "INTERRUPTED",
+                        "reply": hold_reply,
+                        "intents": [],
+                        "subgraphs": ["pending_resolver"],
+                        "citations": [],
+                        "toolSteps": [],
+                        "thinkingSteps": list(ts.steps),
+                        "confirmationCard": pending_card,
+                        "latencyMs": int((time.perf_counter() - t0) * 1000),
+                    }
 
-        input_state: MainGraphState = {
-            "messages": [HumanMessage(content=user_message)],
-            "current_query": user_message,
-            "user_id": user_info["user_id"],
-            "username": user_info["username"],
-            "user_role": user_info["user_role"],
-        }
-        await self.graph.ainvoke(input_state, config=config)
-        return await self._finalize_payload(
-            trace_id=trace_id,
-            thread_id=thread_id,
-            user_info=user_info,
-            endpoint="chat",
-            user_message=user_message,
-            config=config,
-            t0=t0,
-        )
+            input_state: MainGraphState = {
+                "messages": [HumanMessage(content=user_message)],
+                "current_query": user_message,
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
+                "user_role": user_info["user_role"],
+            }
+            await self.graph.ainvoke(input_state, config=config)
+            return await self._finalize_payload(
+                trace_id=trace_id,
+                thread_id=thread_id,
+                user_info=user_info,
+                endpoint="chat",
+                user_message=user_message,
+                config=config,
+                t0=t0,
+                thinking_steps=ts.steps,
+            )
 
     async def confirm(
         self,
@@ -675,16 +723,18 @@ class MultiAgentTicketManager:
         if not prev_snap or not prev_snap.next:
             raise ValueError(f"会话 {thread_id} 当前没有处于等待人工确认的挂起操作")
 
-        await self.graph.ainvoke(Command(resume={"confirmed": confirmed}), config=config)
-        return await self._finalize_payload(
-            trace_id=trace_id,
-            thread_id=thread_id,
-            user_info=user_info,
-            endpoint="confirm",
-            user_message=f"[CARD_CONFIRM={confirmed}]",
-            config=config,
-            t0=t0,
-        )
+        with ThoughtSession(use_queue=False) as ts:
+            await self.graph.ainvoke(Command(resume={"confirmed": confirmed}), config=config)
+            return await self._finalize_payload(
+                trace_id=trace_id,
+                thread_id=thread_id,
+                user_info=user_info,
+                endpoint="confirm",
+                user_message=f"[CARD_CONFIRM={confirmed}]",
+                config=config,
+                t0=t0,
+                thinking_steps=ts.steps,
+            )
 
     async def stream_chat(
         self,
@@ -694,7 +744,7 @@ class MultiAgentTicketManager:
         username: str,
         user_role: str = "USER",
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """SSE 流式对话生成器：实时推送主图路由、子图执行节点、逐块文本与确认卡片事件"""
+        """SSE 流式对话生成器：零延迟推送子图细粒度 thought 思考步骤、路由、逐块文本与确认卡片事件"""
         t0 = time.perf_counter()
         trace_id = f"ag-{uuid.uuid4().hex[:12]}"
         user_info = self._validate_user(user_id, username, user_role)
@@ -707,6 +757,8 @@ class MultiAgentTicketManager:
 
         if prev_snap and prev_snap.next:
             res = await self.chat(thread_id, user_message, user_id, username, user_role)
+            for th in res.get("thinkingSteps") or []:
+                yield {"event": "thought", "data": th}
             yield {"event": "token", "data": {"delta": res["reply"]}}
             if res.get("confirmationCard"):
                 yield {"event": "interrupt", "data": {"confirmationCard": res["confirmationCard"]}}
@@ -721,43 +773,56 @@ class MultiAgentTicketManager:
             "user_role": user_info["user_role"],
         }
 
-        async for chunk in self.graph.astream(input_state, config=config, stream_mode="updates"):
-            for node_name, node_val in chunk.items():
-                if node_name == "__interrupt__":
-                    continue
-                label = _NODE_LABELS.get(node_name, node_name)
-                if node_name == "intent_router" and isinstance(node_val, dict):
-                    yield {
-                        "event": "route",
-                        "data": {
-                            "intents": node_val.get("intents") or [],
-                            "slots": node_val.get("slots") or {},
-                        },
-                    }
-                yield {
-                    "event": "step",
-                    "data": {
-                        "node": node_name,
-                        "label": label,
-                    },
-                }
+        with ThoughtSession(use_queue=True) as ts:
+            assert ts.queue is not None
+            sentinel = {"event": "__end__", "data": {}}
 
-        final_payload = await self._finalize_payload(
-            trace_id=trace_id,
-            thread_id=thread_id,
-            user_info=user_info,
-            endpoint="stream_chat",
-            user_message=user_message,
-            config=config,
-            t0=t0,
-        )
+            async def _drive():
+                try:
+                    async for chunk in self.graph.astream(input_state, config=config, stream_mode="updates"):
+                        for node_name, node_val in chunk.items():
+                            if node_name == "__interrupt__":
+                                continue
+                            label = _NODE_LABELS.get(node_name, node_name)
+                            if node_name == "intent_router" and isinstance(node_val, dict):
+                                ts.queue.put_nowait({
+                                    "event": "route",
+                                    "data": {
+                                        "intents": node_val.get("intents") or [],
+                                        "slots": node_val.get("slots") or {},
+                                    },
+                                })
+                            ts.queue.put_nowait({
+                                "event": "step",
+                                "data": {"node": node_name, "label": label},
+                            })
+                finally:
+                    ts.queue.put_nowait(sentinel)
 
-        # 将最终回复按自然短块平滑流式吐出给前端打字机渲染
+            runner = asyncio.create_task(_drive())
+            while True:
+                item = await ts.queue.get()
+                if item.get("event") == "__end__":
+                    break
+                yield item
+            await runner
+
+            final_payload = await self._finalize_payload(
+                trace_id=trace_id,
+                thread_id=thread_id,
+                user_info=user_info,
+                endpoint="stream_chat",
+                user_message=user_message,
+                config=config,
+                t0=t0,
+                thinking_steps=ts.steps,
+            )
+
         text = final_payload.get("reply") or ""
-        step_size = 18
+        step_size = 16
         for idx in range(0, len(text), step_size):
             yield {"event": "token", "data": {"delta": text[idx : idx + step_size]}}
-            await asyncio.sleep(0.012)
+            await asyncio.sleep(0.01)
 
         if final_payload.get("confirmationCard"):
             yield {
@@ -775,12 +840,52 @@ class MultiAgentTicketManager:
         username: str,
         user_role: str = "USER",
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        res = await self.confirm(thread_id, confirmed, user_id, username, user_role)
+        t0 = time.perf_counter()
+        trace_id = f"ag-{uuid.uuid4().hex[:12]}"
+        user_info = self._validate_user(user_id, username, user_role)
+        if self.graph is None:
+            await self.startup()
+
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 25}
+        prev_snap = await self.graph.aget_state(config)
+        self._assert_thread_owner(prev_snap, user_info["user_id"])
+        if not prev_snap or not prev_snap.next:
+            raise ValueError(f"会话 {thread_id} 当前没有处于等待人工确认的挂起操作")
+
+        with ThoughtSession(use_queue=True) as ts:
+            assert ts.queue is not None
+            sentinel = {"event": "__end__", "data": {}}
+
+            async def _drive_confirm():
+                try:
+                    await self.graph.ainvoke(Command(resume={"confirmed": confirmed}), config=config)
+                finally:
+                    ts.queue.put_nowait(sentinel)
+
+            runner = asyncio.create_task(_drive_confirm())
+            while True:
+                item = await ts.queue.get()
+                if item.get("event") == "__end__":
+                    break
+                yield item
+            await runner
+
+            res = await self._finalize_payload(
+                trace_id=trace_id,
+                thread_id=thread_id,
+                user_info=user_info,
+                endpoint="stream_confirm",
+                user_message=f"[CARD_CONFIRM={confirmed}]",
+                config=config,
+                t0=t0,
+                thinking_steps=ts.steps,
+            )
+
         text = res.get("reply") or ""
-        step_size = 18
+        step_size = 16
         for idx in range(0, len(text), step_size):
             yield {"event": "token", "data": {"delta": text[idx : idx + step_size]}}
-            await asyncio.sleep(0.012)
+            await asyncio.sleep(0.01)
         yield {"event": "done", "data": res}
 
 

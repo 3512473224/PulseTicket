@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from app.graph.state import MainGraphState, SharedSlots, get_chat_llm
+from app.graph.thought_stream import emit_thought
 
 # P0/P3 安全红线：提示词注入与越权改价正则特征库
 _INJECTION_PATTERNS: List[Tuple[re.Pattern, str]] = [
@@ -226,6 +227,15 @@ async def input_guard_node(state: MainGraphState) -> Dict[str, Any]:
 
     block_reason = detect_prompt_injection(latest_query)
     if block_reason:
+        emit_thought(
+            key="guard",
+            phase="guard",
+            agent_label="安全护栏",
+            title="拦截高危提示词注入 / 越权指令",
+            detail=block_reason,
+            badges=["BLOCKED"],
+            status="warn",
+        )
         safe_reply = (
             f"🛡️ **安全护栏已拦截该请求**（原因：{block_reason}）。\n\n"
             "PulseTicket 的所有票价核算、库存锁定与角色权限均由后端 Java 微服务确定性校验，"
@@ -247,6 +257,15 @@ async def input_guard_node(state: MainGraphState) -> Dict[str, Any]:
             "messages": [AIMessage(content=safe_reply)],
         }
 
+    emit_thought(
+        key="guard",
+        phase="guard",
+        agent_label="安全护栏",
+        title="可信身份与输入安全审查通过",
+        detail=f"网关透传身份 {uname} (#{uid}) 校验有效，未检出越权改价或注入特征",
+        badges=[f"UID {uid}"],
+        status="done",
+    )
     return {
         "current_query": latest_query,
         "history_summary": summary,
@@ -268,6 +287,14 @@ async def intent_router_node(state: MainGraphState) -> Dict[str, Any]:
     """
     query = state.get("current_query") or ""
     prev_slots: SharedSlots = dict(state.get("slots") or {})
+    emit_thought(
+        key="router",
+        phase="router",
+        agent_label="主图路由",
+        title="正在拆解用户意图与跨轮槽位…",
+        detail="识别是否包含复合多意图，并提取场次、张数、预算与锁座确认倾向",
+        status="running",
+    )
     rule_intents, merged_slots = extract_deterministic_signals(query, prev_slots)
 
     final_intents = rule_intents
@@ -303,6 +330,38 @@ async def intent_router_node(state: MainGraphState) -> Dict[str, Any]:
     except Exception:
         # 离线无 Key 评测或模型波动时平滑回退到确定性路由结果
         final_intents = rule_intents
+
+    intent_cn = {
+        "policy": "规则与场馆问答",
+        "purchase": "选座与购票专员",
+        "order": "订单与售后专员",
+        "chitchat": "常规对话引导",
+    }
+    route_chain = " → ".join(intent_cn.get(i, i) for i in final_intents)
+    slot_notes = []
+    if merged_slots.get("show_keyword"):
+        slot_notes.append(f"演出「{merged_slots['show_keyword']}」")
+    if merged_slots.get("session_id"):
+        slot_notes.append(f"场次 #{merged_slots['session_id']}")
+    if merged_slots.get("seat_count"):
+        slot_notes.append(f"{merged_slots['seat_count']} 张")
+    if merged_slots.get("max_unit_price"):
+        slot_notes.append(f"单价 ≤ ¥{int(merged_slots['max_unit_price'])}")
+    if merged_slots.get("seat_ids"):
+        slot_notes.append(f"席位 ID {merged_slots['seat_ids']}")
+    if merged_slots.get("order_no"):
+        slot_notes.append(f"订单 {merged_slots['order_no']}")
+    slot_summary = f"；继承/提取槽位：{', '.join(slot_notes)}" if slot_notes else ""
+
+    emit_thought(
+        key="router",
+        phase="router",
+        agent_label="主图路由",
+        title=f"编排调度链路：{route_chain}",
+        detail=f"按确定性优先级拆解为 {len(final_intents)} 个子任务顺序执行{slot_summary}",
+        badges=[intent_cn.get(i, i) for i in final_intents],
+        status="done",
+    )
 
     step_record = {
         "agent": "intent_router",

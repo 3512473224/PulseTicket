@@ -1,8 +1,8 @@
 {
-  "evaluatedAt": "2026-11-18 14:51:43",
+  "evaluatedAt": "2026-11-18 16:41:45",
   "totalCases": 40,
   "indexedKnowledgeChunks": 14,
-  "elapsedMs": 508,
+  "elapsedMs": 503,
   "intentRouting": {
     "passed": 12,
     "total": 12,

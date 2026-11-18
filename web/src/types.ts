@@ -399,6 +399,17 @@ export interface AgentToolStep {
   args?: Record<string, any>
 }
 
+export interface AgentThoughtStep {
+  key: string
+  phase: string
+  agentLabel: string
+  title: string
+  detail: string
+  badges?: string[]
+  status: 'running' | 'done' | 'warn'
+  atMs: number
+}
+
 export interface AgentConfirmationCard {
   actionType: 'CREATE_ORDER' | 'CANCEL_ORDER'
   toolName: string
@@ -431,6 +442,9 @@ export interface AgentChatMessage {
   subgraphs?: string[]
   citations?: string[]
   toolSteps?: AgentToolStep[]
+  thinkingSteps?: AgentThoughtStep[]
+  thinkingExpanded?: boolean
+  userToggledThinking?: boolean
   confirmationCard?: AgentConfirmationCard | null
   cardDecision?: 'PENDING' | 'SUBMITTING' | 'CONFIRMED' | 'REJECTED'
   latencyMs?: number

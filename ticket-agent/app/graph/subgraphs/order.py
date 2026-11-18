@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from app.graph.state import SharedSlots, get_chat_llm
+from app.graph.thought_stream import emit_thought
 from app.tools.ticket_tools import (
     ORDER_READ_TOOLS,
     ORDER_WRITE_TOOLS,
@@ -90,12 +91,32 @@ async def order_agent_node(state: OrderSubState) -> Dict[str, Any]:
     else:
         msgs = [SystemMessage(content=sys_text)] + [m for m in msgs if not isinstance(m, SystemMessage)]
 
+    emit_thought(
+        key=f"ord-reason-{step_count + 1}",
+        phase="order",
+        agent_label="订单售后子图",
+        title="正在分析订单查询与退改核算需求…",
+        detail="由确定性代码执行订单核查与阶梯手续费计算，禁止模型心算金额",
+        status="running",
+    )
+
     if step_count >= _MAX_ORDER_STEPS:
         resp = await get_chat_llm(temperature=0.1).ainvoke(msgs)
     else:
         resp = await _get_order_llm().ainvoke(msgs)
 
-    answer = str(resp.content or "").strip() if not getattr(resp, "tool_calls", None) else state.get("answer", "")
+    tcs = getattr(resp, "tool_calls", None) or []
+    emit_thought(
+        key=f"ord-reason-{step_count + 1}",
+        phase="order",
+        agent_label="订单售后子图",
+        title=f"调用订单工具：{', '.join(tc.get('name', '') for tc in tcs)}" if tcs else "已完成订单与售后结论汇总",
+        detail="查询 order-service 实时状态并同步核对退改条款",
+        badges=[tc.get("name", "") for tc in tcs] if tcs else ["Done"],
+        status="done",
+    )
+
+    answer = str(resp.content or "").strip() if not tcs else state.get("answer", "")
     return {
         "sub_messages": [resp],
         "step_count": step_count + 1,
@@ -203,6 +224,15 @@ async def verify_cancel_node(state: OrderSubState, config: RunnableConfig) -> Di
     })
 
     if not check_res.get("ok"):
+        emit_thought(
+            key=f"ord-verify-{t_id}",
+            phase="order",
+            agent_label="订单售后子图",
+            title=f"取消前置校验拦截（订单 {order_no}）",
+            detail=check_res.get("message", "当前状态不支持直接取消"),
+            badges=[check_res.get("orderStatus") or "拦截"],
+            status="warn",
+        )
         if check_res.get("orderStatus") == "PAID" and "POL-REFUND-001" not in citations:
             citations.append("POL-REFUND-001")
         err_msg = ToolMessage(

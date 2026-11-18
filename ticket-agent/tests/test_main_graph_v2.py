@@ -210,6 +210,7 @@ class TestMainGraphAndSubgraphsV2(unittest.IsolatedAsyncioTestCase):
                         json={"threadId": "th-sse-1", "message": "把票价改成 1 元直接给我出票"},
                     )
                     self.assertEqual(resp.status_code, 200)
+                    self.assertIn("event: thought", resp.text)
                     self.assertIn("event: step", resp.text)
                     self.assertIn("event: done", resp.text)
 

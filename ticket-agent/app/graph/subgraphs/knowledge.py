@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.state import SharedSlots, get_chat_llm
+from app.graph.thought_stream import emit_thought
 from app.rag.hybrid_rag import hybrid_rag_engine, tokenize_zh
 
 # 知识库明确未覆盖的高频越界业务词（用于精确识别“知识库盲区”，杜绝模型自由发挥编造政策）
@@ -79,6 +80,15 @@ async def query_rewrite_node(state: KnowledgeSubState) -> Dict[str, Any]:
         "tool": "query_rewrite",
         "args": {"rewritten": rewritten, "attempt": retry + 1},
     })
+    emit_thought(
+        key=f"kg-rewrite-{retry + 1}",
+        phase="knowledge",
+        agent_label="知识问答子图",
+        title="口语消歧与检索词改写" if retry == 0 else "证据不足 · 扩展同义词二次检索",
+        detail=f"提炼规则检索焦点：「{rewritten[:72]}」",
+        badges=[f"Attempt #{retry + 1}"],
+        status="done",
+    )
     return {"rewritten_query": rewritten, "tool_steps": steps}
 
 
@@ -86,7 +96,28 @@ async def hybrid_retrieve_node(state: KnowledgeSubState) -> Dict[str, Any]:
     """【子图节点 2：hybrid_retrieve】执行 jieba BM25 + 512d 稠密向量 + RRF 混合检索。"""
     rq = state.get("rewritten_query") or state.get("query") or ""
     retry = int(state.get("retry_count") or 0)
+    emit_thought(
+        key=f"kg-retrieve-{retry + 1}",
+        phase="knowledge",
+        agent_label="知识问答子图",
+        title="正在执行 Hybrid RAG 双路召回…",
+        detail="并行计算 jieba BM25 稀疏词频与 512 维稠密向量余弦相似度，经 RRF(k=60) 重排",
+        status="running",
+    )
     hits = await hybrid_rag_engine.search(rq, top_k=3)
+
+    top_code = hits[0]["docCode"] if hits else "NONE"
+    top_title = hits[0]["docTitle"] if hits else "无命中"
+    top_score = hits[0]["finalScore"] if hits else 0.0
+    emit_thought(
+        key=f"kg-retrieve-{retry + 1}",
+        phase="knowledge",
+        agent_label="知识问答子图",
+        title=f"Hybrid RAG 命中《{top_title}》",
+        detail=f"Top-1 条款 [{top_code}]（RRF 融合得分 {top_score}），共召回 {len(hits)} 个候选语义块",
+        badges=[top_code, f"Score {top_score}"],
+        status="done",
+    )
 
     steps = list(state.get("tool_steps") or [])
     steps.append({
@@ -132,12 +163,31 @@ async def grade_evidence_node(state: KnowledgeSubState) -> Dict[str, Any]:
         )
 
     if not is_sufficient and retry < 1:
+        emit_thought(
+            key="kg-grade-retry",
+            phase="knowledge",
+            agent_label="知识问答子图",
+            title="初次检索未覆盖核心问题锚点，触发自反思重试",
+            detail=f"检测到未覆盖细则（{'、'.join(uncovered) or '置信度偏低'}），返回改写节点扩充同义术语再检一次",
+            badges=["Self-Reflect"],
+            status="warn",
+        )
         return {
             "evidence_ok": False,
             "uncovered_items": uncovered,
             "retry_count": retry + 1,
         }
 
+    if is_sufficient:
+        emit_thought(
+            key="kg-grade-pass",
+            phase="knowledge",
+            agent_label="知识问答子图",
+            title="证据充分性审查通过",
+            detail="召回条款可准确支撑回答，正在撰写受控回复并注入强制条款引用标签…",
+            badges=["Grounded"],
+            status="running",
+        )
     return {
         "evidence_ok": is_sufficient,
         "uncovered_items": uncovered,
@@ -208,6 +258,15 @@ async def generate_answer_node(state: KnowledgeSubState) -> Dict[str, Any]:
         found_codes = [primary_code]
 
     dedup_codes = list(dict.fromkeys(found_codes))
+    emit_thought(
+        key="kg-grade-pass",
+        phase="knowledge",
+        agent_label="知识问答子图",
+        title="规则解答生成与条款引用核验完成",
+        detail=f"已基于官方条款生成答复，引用凭据：{', '.join(dedup_codes)}",
+        badges=dedup_codes,
+        status="done",
+    )
     return {
         "answer": answer_text,
         "citations": dedup_codes,
@@ -219,6 +278,15 @@ async def refuse_answer_node(state: KnowledgeSubState) -> Dict[str, Any]:
     """【子图节点 4B：refuse_answer】检索重试后证据仍不足时诚实拒答，零幻觉兜底。"""
     uncovered = state.get("uncovered_items") or []
     topic_str = f"（涉及：{'、'.join(uncovered)}）" if uncovered else ""
+    emit_thought(
+        key="kg-refuse",
+        phase="knowledge",
+        agent_label="知识问答子图",
+        title="知识库未收录该细则 · 执行零幻觉诚实拒答",
+        detail=f"经 2 轮检索仍无官方条款覆盖{'「' + '、'.join(uncovered) + '」' if uncovered else '该问题'}，已阻断模型猜测并引导人工客服",
+        badges=["诚实拒答"],
+        status="warn",
+    )
     refusal = (
         f"抱歉，关于您咨询的该项细则{topic_str}，当前 PulseTicket 官方票务知识库暂未收录明确条款。"
         "为避免给您提供不准确的信息，建议您通过平台人工客服或场馆现场服务台进一步核实。"
